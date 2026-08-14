@@ -16,6 +16,23 @@ class JsonTensorRecord(TypedDict):
     numel: int
     stats: dict[str, float]
     unavailable_stats: dict[str, str]
+    histograms: dict[str, JsonHistogramRecord]
+    unavailable_histograms: dict[str, str]
+
+
+class JsonHistogramRecord(TypedDict):
+    """Describe a lossless serialized histogram consumed by tests."""
+
+    bin_edges: list[float]
+    bin_counts: list[int]
+    finite_count: int
+    nonfinite_count: int
+    underflow_count: int
+    overflow_count: int
+    minimum: float
+    maximum: float
+    sum: float
+    sum_squares: float
 
 
 class JsonModuleCall(TypedDict):
@@ -38,6 +55,7 @@ class JsonSnapshotRecord(TypedDict):
 
     schema_version: int
     snapshot_id: int
+    timestamp: str
     state: str
     collection_duration_ms: float
     modules: dict[str, list[JsonModuleCall]]
@@ -57,6 +75,21 @@ class JsonSamplingRecord(TypedDict):
     settings: dict[str, bool | float | int | str]
 
 
+class JsonReducerRecord(TypedDict):
+    """Describe serialized reducer configuration consumed by tests."""
+
+    type: str
+    settings: dict[str, bool | float | int | str | list[bool | float | int | str]]
+
+
+class JsonCollectionRecord(TypedDict):
+    """Describe serialized collection boundaries consumed by tests."""
+
+    signals: list[str]
+    scalar_reducers: list[JsonReducerRecord]
+    histogram_reducers: list[JsonReducerRecord]
+
+
 class JsonRunRecord(TypedDict):
     """Describe immutable run metadata consumed by schema tests."""
 
@@ -65,6 +98,7 @@ class JsonRunRecord(TypedDict):
     observer_version: str
     torch_version: str
     sampling: JsonSamplingRecord
+    collection: JsonCollectionRecord
 
 
 def read_snapshot(path: Path) -> JsonSnapshotRecord:
@@ -84,7 +118,14 @@ def read_modules(path: Path) -> dict[str, JsonModuleRecord]:
 def read_run(path: Path) -> JsonRunRecord:
     """Parse run metadata after validating its required top-level fields."""
     value = _read_object(path)
-    required = {"schema_version", "created_at", "observer_version", "torch_version", "sampling"}
+    required = {
+        "schema_version",
+        "created_at",
+        "observer_version",
+        "torch_version",
+        "sampling",
+        "collection",
+    }
     if not required.issubset(value):
         raise ValueError(f"run record is missing fields: {sorted(required - value.keys())}")
     return cast(JsonRunRecord, value)

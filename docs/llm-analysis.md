@@ -5,6 +5,10 @@ parsing or knowledge of the Python process that created it. The LLM is an analys
 an oracle: it can rank suspicious signatures and propose discriminating experiments, but telemetry
 alone cannot establish why validation accuracy is low.
 
+Every directory-backed run generates `index.md`. For an LLM with filesystem access, the shortest
+workflow is to point it at that file and state the research question; the index supplies the file
+map, observed fields, evidence limits, and analysis prompt.
+
 ## Provide a bounded evidence set
 
 For one run, provide:
@@ -40,7 +44,7 @@ Analyze only claims supported by the attached run.json, modules.json, and snapsh
 
 1. Summarize the sampling policy and which signals were actually observed.
 2. Identify the earliest modules and snapshots with suspicious activation RMS,
-   output-gradient RMS, max_abs relative to RMS, or finite_fraction.
+   output-gradient RMS, max_abs relative to RMS, finite_fraction, or histogram shape.
 3. Separate every conclusion into:
    - Observed fact: exact module, snapshot ID, metric, and value.
    - Hypothesis: one or more mechanisms consistent with that fact.
@@ -74,6 +78,8 @@ in its report so the calculation can be checked.
 ## Use JSON and TensorBoard for different jobs
 
 TensorBoard is useful for visual trend discovery. Canonical JSON is better for LLM analysis because
-it preserves module calls, shapes, dtypes, unavailable-stat reasons, errors, and snapshot lifecycle
-state. When both are needed, use `CompositeSink(DirectorySink(...), MetricLoggerSink(...))` rather
-than replacing structured telemetry with a scalar-only logger.
+it preserves module calls, shapes, dtypes, unavailable-stat reasons, errors, snapshot lifecycle,
+and every histogram bin and moment. `TensorBoardSink` derives its events from those records, so an
+LLM can reproduce the same distribution evidence without parsing event files. When both are
+needed, use `CompositeSink(DirectorySink(...), TensorBoardSink(...))` rather than replacing
+structured telemetry with a dashboard-only destination.

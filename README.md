@@ -1,25 +1,60 @@
 # TorchInstruments
 
-**See what is happening inside a PyTorch model before a bad loss curve becomes a failed run.**
+**Turn “validation accuracy stalled” into a concrete next experiment.**
 
-TorchInstruments adds passive, trainer-agnostic telemetry to existing PyTorch models. Attach it
-once, keep the training loop unchanged, and receive compact JSON snapshots of activation and
-output-gradient behavior from the modules that matter.
-
-It is useful when a scalar loss or validation score says that a research run underperformed but
-cannot tell you where: an activation scale may be drifting with depth, gradients may disappear at
-one layer, or a single outlier may be making a model difficult to quantize. TorchInstruments
-preserves the evidence needed to investigate those questions without storing raw tensors or
-adopting a particular trainer or dashboard.
+A loss curve tells you that a run is underperforming. It rarely tells you whether gradients vanish
+at one block, activations drift over time, values become non-finite before the loss does, or a
+distribution is dominated by rare outliers. TorchInstruments records that internal evidence while
+the model trains normally.
 
 ```text
-inject_observer(model)  ->  train normally  ->  inspect structured telemetry
+inject_observer(model)  →  train normally  →  inspect evidence  →  test a narrower hypothesis
 ```
+
+## The whole workflow
+
+```python
+from torchinstruments import inject_observer
+
+inject_observer(model, output_dir="stats")
+train(model)
+```
+
+Training remains unchanged. After the run, tell an LLM:
+
+```text
+Read stats/index.md and analyze why validation accuracy may have stalled.
+Give me measured evidence, plausible hypotheses, missing evidence, and the next experiment.
+```
+
+`index.md` tells the LLM what else to read and what the telemetry can and cannot support. You do
+not need to explain the snapshot schema by hand. If TensorBoard output is enabled, the same run also
+shows layer curves and optional distributions for visual exploration.
+
+## What a useful result looks like
+
+Suppose a modified model stalls below its baseline. Instead of “try another learning rate,” the run
+can support a result like this:
+
+> **Observed:** gradient RMS remains comparable through blocks 1–6, then drops by orders of
+> magnitude at `encoder.blocks.7.proj`. The collapse repeats in later sampled backward passes.
+>
+> **What it suggests:** the optimization path first becomes weak at block 7; normalization,
+> residual scaling, or saturation there is more plausible than a model-wide optimizer failure.
+>
+> **Next experiment:** restore the previous normalization or residual scale at block 7 only, keep
+> the seed and data order fixed, and test whether both gradient flow and validation accuracy recover.
+
+Other runs may instead reveal drifting activation distributions, non-finite values appearing at a
+specific module, or rare outliers that make one layer difficult to quantize. Finding no meaningful
+internal difference is useful too: it redirects the investigation toward data, labels, loss,
+capacity, or evaluation.
+
+The measurements narrow the hypothesis space; they do not pretend that correlation proves cause.
 
 ## Quick start
 
-TorchInstruments is currently an alpha available from its public GitHub repository. Run the
-complete demonstration with Python 3.11 or newer and [`uv`](https://docs.astral.sh/uv/):
+TorchInstruments is an alpha package supporting Python 3.11 and newer. Run the complete example:
 
 ```bash
 git clone https://github.com/Red-Eyed/torchinstruments.git
@@ -28,12 +63,11 @@ uv sync --dev
 uv run examples/basic_training.py
 ```
 
-The script prints a newly created telemetry directory containing three sampled training
-iterations. See the
-[example source](https://github.com/Red-Eyed/torchinstruments/blob/main/examples/basic_training.py)
-and its [walkthrough](https://github.com/Red-Eyed/torchinstruments/tree/main/examples).
+The script prints a new telemetry directory. Open its `index.md`, or give that path directly to a
+filesystem-capable LLM. The [examples](https://github.com/Red-Eyed/torchinstruments/tree/main/examples)
+also include a real MNIST classifier with Lightning and TensorBoard.
 
-To instrument an existing model, add one call before training:
+Instrument an existing model with one call before training:
 
 ```python
 from datetime import timedelta
@@ -51,141 +85,37 @@ finally:
     remove_observer(model)
 ```
 
-There is no `observer.step()`, loss wrapper, trainer callback, or logging call inside `train()`.
-The first eligible model forward after each interval becomes a sampled snapshot, and its backward
-is correlated with that same snapshot automatically.
+There is no observer call inside the training loop. The first eligible model forward after each
+interval becomes a snapshot, and its backward is correlated automatically.
 
-To see the same telemetry in TensorBoard through a real Lightning logger:
-
-```bash
-uv run examples/lightning_mnist.py
-```
-
-The
-[Lightning MNIST example](https://github.com/Red-Eyed/torchinstruments/blob/main/examples/lightning_mnist.py)
-downloads the real dataset, trains a small CNN, and keeps validation accuracy, canonical JSON, and
-TensorBoard telemetry from the same bounded research run.
-
-## What the telemetry reveals
-
-A snapshot associates measurements with the model's original module names:
-
-```json
-{
-  "snapshot_id": 2,
-  "state": "backward_observed",
-  "modules": {
-    "encoder.projection": [
-      {
-        "call_index": 0,
-        "outputs": {
-          "output": {
-            "shape": [16, 512],
-            "dtype": "bfloat16",
-            "stats": {
-              "rms": 0.83,
-              "max_abs": 7.1,
-              "finite_fraction": 1.0
-            }
-          }
-        },
-        "output_gradients": {
-          "grad_output": {
-            "stats": {
-              "rms": 0.0042,
-              "max_abs": 0.091,
-              "finite_fraction": 1.0
-            }
-          }
-        }
-      }
-    ]
-  }
-}
-```
-
-In practical terms, `output.rms` measures the typical activation scale, `output.max_abs` exposes
-outliers relative to that scale, and `grad_output.rms` measures the backpropagated signal at the
-module output. Comparing these values across layers and snapshots helps localize the first point
-where training behavior changes.
+For distribution evidence and TensorBoard output, see the
+[Lightning MNIST example](https://github.com/Red-Eyed/torchinstruments/blob/main/examples/lightning_mnist.py).
+It uses an explicit 64-bin range and a less frequent histogram cadence so cost and comparison
+semantics remain visible rather than hidden in defaults.
 
 ## Use cases
 
-### Investigate why accuracy stopped improving
+TorchInstruments helps answer focused research questions:
 
-Suppose a baseline reaches 78% validation accuracy while a modified model stalls at 75%. If the
-candidate's gradient RMS collapses after one encoder layer while the baseline remains stable, that
-is evidence for an optimization-path problem and motivates a controlled normalization, residual
-scaling, initialization, or learning-rate experiment. If internal scales remain comparable, the
-telemetry does not explain the gap and attention should move to missing evidence such as data,
-labels, loss design, capacity, or evaluation.
+- Where does gradient signal first vanish or explode?
+- Which layer first emits non-finite values?
+- Do activation scales or distributions drift as training progresses?
+- Are rare outliers dominating a layer's quantization range?
+- Did an architecture change alter internal behavior even when loss curves look similar?
+- Are model internals stable enough that the accuracy investigation should move to data, loss, or
+  evaluation?
 
-TorchInstruments should narrow the hypothesis space; it should not invent a causal answer that the
-observed tensors cannot support.
-
-### Find exploding or vanishing gradients
-
-Compare output-gradient RMS across adjacent modules. A sharp drop identifies where gradient signal
-is disappearing; a sudden increase identifies where it begins to amplify. Because snapshots bind
-forward and backward from the same model pass, the comparison is not assembled from unrelated
-iterations.
-
-### Catch non-finite values before the loss becomes NaN
-
-Track `finite_fraction` through module order. The first module below `1.0` narrows the investigation
-to the operation that produced non-finite values instead of the later loss computation that merely
-reported them.
-
-### Diagnose activation-scale drift
-
-Compare activation RMS across snapshots after a learning-rate change, architecture modification,
-or long training interval. Stable loss can hide a growing internal scale that later destabilizes
-training or reduces numerical headroom.
-
-### Assess quantization risk
-
-Compare `max_abs` with `rms` to find layers whose ranges are dominated by rare outliers. Those
-layers are candidates for clipping, alternate calibration, or architectural investigation before
-running an expensive quantization evaluation.
-
-### Compare model revisions
-
-Module names and metric field names are deterministic, making snapshots suitable for direct JSON
-diffs or LLM-assisted analysis. Compare the same layers before and after changing normalization,
-initialization, residual connections, or precision.
-
-### Add observability to any trainer
-
-Hooks attach to the model rather than a training framework. Custom loops need no integration, and
-Lightning, Accelerate, or other trainers do not become core package dependencies. The repository
-contains tested Lightning/TensorBoard integration; other trainers still require dedicated
-compatibility validation.
-
-## Research diagnosis workflow
-
-Useful analysis follows a disciplined chain:
-
-```text
-observed fact → plausible causes → missing evidence → next experiment
-```
-
-| Observation | What it may suggest | What to test next |
-| --- | --- | --- |
-| Gradient RMS drops sharply after one module | Saturation, detached paths, or poor residual scaling | Inspect that boundary and change one normalization or residual factor |
-| Gradient RMS grows rapidly with depth | Unstable initialization, amplification, or excessive learning rate | Compare a lower learning rate or alternate initialization on the same data |
-| Activation RMS drifts between snapshots | Distribution shift or normalization/residual instability | Compare fixed batches and inspect normalization state |
-| `finite_fraction` first falls below `1.0` | Overflow or invalid arithmetic near that module | Reproduce the batch and inspect the preceding operation |
-| Internal telemetry remains stable | The accuracy bottleneck may be data, labels, loss, capacity, or evaluation | Audit task-level evidence rather than changing scale blindly |
-
-The
+It attaches to the model rather than the trainer, so the same workflow applies to custom loops and
+Lightning without telemetry calls inside training. The
 [research workflow guide](https://github.com/Red-Eyed/torchinstruments/blob/main/docs/research-workflows.md)
-explains controlled baseline-versus-candidate collection, evidence levels, and how to convert a
-suspicious signature into the smallest experiment that can falsify it.
+covers controlled baseline-versus-candidate experiments in more depth.
 
 ## Analyze telemetry with an LLM
 
 Canonical JSON is designed so an LLM can inspect module names, tensor paths, exact values, missing-
-value reasons, and snapshot state without parsing TensorBoard files. For a bounded analysis, provide
+value reasons, and snapshot state without parsing TensorBoard files. For a filesystem-capable LLM,
+point it at the generated `stats/index.md`; that file describes the run, every artifact, observed
+fields, evidence limits, and a ready-to-use prompt. For an upload-based LLM, provide `index.md`,
 `run.json`, `modules.json`, a small set of relevant snapshots, the validation result, and the exact
 research intervention.
 
@@ -215,6 +145,7 @@ The default `inject_observer(model)` configuration has a deliberately bounded sc
 | Backward signals | The backpropagated gradient with respect to each differentiable selected-module output |
 | Tensor metadata | `shape`, `dtype`, `device`, and `numel` |
 | Scalar statistics | `mean`, population `std`, `rms`, `max_abs`, and `finite_fraction` |
+| Histograms | Disabled; opt in with `histogram(...)` and an explicit independent cadence |
 | Persistence | Strict, human-readable JSON under `stats/` |
 | Collection failures | Preserve the error in telemetry and emit a warning |
 
@@ -224,88 +155,35 @@ are never persisted.
 
 The current release does **not** monitor module inputs, `grad_input`, parameters, parameter
 gradients, losses, optimizer state, or optimizer updates. It also does not yet calculate
-quantiles, histograms, zero fractions, per-channel metrics, or cross-snapshot summaries. These are
-planned capabilities rather than implied behavior.
+quantiles, zero fractions, per-channel metrics, or cross-snapshot summaries. These are planned
+capabilities rather than implied behavior.
 
-## Configuration
+## Add histograms
 
-The short API resolves the same replaceable components exposed by the explicit API:
+Histograms are opt-in because they cost more than scalar statistics. Fixed bounds make the same
+bins comparable throughout training:
 
 ```python
-from torchinstruments import (
-    AlwaysSampler,
-    CompositeSink,
-    DirectorySink,
-    MetricLoggerSink,
-    default_reducers,
-    inject_observer,
-    leaf_modules,
-)
+from torchinstruments import histogram, inject_observer
 
 inject_observer(
     model,
-    sampler=AlwaysSampler(),
-    selector=leaf_modules(),
-    reducers=default_reducers(),
-    sink=DirectorySink("stats"),
-    error_policy="warn",
+    histograms=[
+        histogram(
+            bins=64,
+            value_range=(-8.0, 8.0),
+            every_n_snapshots=10,
+        ),
+    ],
 )
 ```
 
-| Setting | Purpose | Built-in choices |
-| --- | --- | --- |
-| `interval` | Configure time-based sampling through the convenience API | Any positive `datetime.timedelta`; default is one minute |
-| `output_dir` | Select the directory used by the convenience sink | `"stats"` by default |
-| `sampler` | Decide which root forwards become snapshots | `TimedSampler`, `EveryNForwardsSampler`, `AlwaysSampler` |
-| `selector` | Decide which named modules receive collection hooks | `leaf_modules()` or any compatible predicate |
-| `reducers` | Convert detached tensors into compact named scalars | `mean()`, `std()`, `rms()`, `max_abs()`, `finite_fraction()`, `combine(...)` |
-| `sink` | Persist or project normalized records | `DirectorySink`, `MetricLoggerSink`, `CompositeSink`, or any compatible sink |
-| `error_policy` | Control collection failure behavior | `"warn"`, `"ignore"`, or `"raise"` |
+Out-of-range values remain visible through underflow and overflow counts. The complete histogram
+is stored in JSON even when it is also displayed in TensorBoard.
 
-`interval` cannot be combined with a custom `sampler`, and `output_dir` cannot be combined with a
-custom `sink`; conflicting configuration raises immediately instead of silently ignoring one
-value.
+## Lightning and TensorBoard
 
-Sampling every 100 root forwards requires no trainer step counter:
-
-```python
-from torchinstruments import EveryNForwardsSampler, inject_observer
-
-inject_observer(
-    model,
-    sampler=EveryNForwardsSampler(100),
-    output_dir="stats",
-)
-```
-
-Module selection is an ordinary typed callable, so domain-specific policy stays outside the core:
-
-```python
-from torch import nn
-
-from torchinstruments import AlwaysSampler, inject_observer
-
-
-def select_linear_layers(name: str, module: nn.Module) -> bool:
-    """Select named linear transformations for one diagnostic run."""
-    return bool(name) and isinstance(module, nn.Linear)
-
-
-inject_observer(
-    model,
-    sampler=AlwaysSampler(),
-    selector=select_linear_layers,
-    output_dir="linear-stats",
-)
-```
-
-Reducers and sinks use the same callable/protocol style, so custom diagnostics and persistence do
-not require inheriting from framework base classes.
-
-### Lightning, TensorBoard, and custom metric loggers
-
-`MetricLoggerSink` accepts any object with `log_metrics(metrics, step)`, including Lightning's
-`TensorBoardLogger`. `CompositeSink` sends each lifecycle event to multiple destinations:
+Use the same Lightning logger for task metrics and internal model telemetry:
 
 ```python
 from lightning.pytorch import Trainer
@@ -314,7 +192,8 @@ from lightning.pytorch.loggers import TensorBoardLogger
 from torchinstruments import (
     CompositeSink,
     DirectorySink,
-    MetricLoggerSink,
+    TensorBoardSink,
+    histogram,
     inject_observer,
     remove_observer,
 )
@@ -322,10 +201,14 @@ from torchinstruments import (
 logger = TensorBoardLogger(save_dir="logs", name="experiment")
 sink = CompositeSink(
     DirectorySink("stats"),
-    MetricLoggerSink(logger),
+    TensorBoardSink(logger),
 )
 model = MyLightningModule()
-inject_observer(model.network, sink=sink)
+inject_observer(
+    model.network,
+    histograms=[histogram(value_range=(-8.0, 8.0))],
+    sink=sink,
+)
 
 trainer = Trainer(logger=logger)
 try:
@@ -334,37 +217,16 @@ finally:
     remove_observer(model.network)
 ```
 
-The metric logger receives paths such as
-`torchinstruments/modules/encoder.projection/call_0/output/rms`. Logger steps are snapshot IDs, not
-Lightning optimizer steps, because a framework-independent observer cannot infer a universal
-optimizer-step counter.
-
-`MetricLoggerSink` never finalizes an externally supplied logger. The Lightning `Trainer` owns its
-logger lifecycle; custom callers retain the same responsibility. JSON remains the recommended
-canonical output because scalar loggers cannot preserve shapes, dtypes, errors, unavailable-value
-reasons, or module metadata.
-
-A custom logger needs only the same small method:
-
-```python
-from collections.abc import Mapping
-
-
-class ConsoleMetricLogger:
-    """Print scalar telemetry for a minimal local diagnostic run."""
-
-    def log_metrics(self, metrics: Mapping[str, float], step: int | None = None) -> None:
-        """Print one explicitly identified telemetry snapshot."""
-        print({"snapshot_id": step, "metrics": dict(metrics)})
-
-
-inject_observer(model, sink=MetricLoggerSink(ConsoleMetricLogger()))
-```
+The Trainer still owns the logger. TorchInstruments never closes it. For another dashboard or a
+custom `log_metrics(metrics, step)` implementation, use `MetricLoggerSink`. Sampling, module
+selection, custom reducers, error policies, and sink protocols are covered in the
+[design document](https://github.com/Red-Eyed/torchinstruments/blob/main/docs/design.md).
 
 ## Output layout
 
 ```text
 stats/
+    index.md
     run.json
     modules.json
     snapshots/
@@ -372,7 +234,8 @@ stats/
         000001.json
 ```
 
-- `run.json` records the schema, package and PyTorch versions, creation time, and sampling policy.
+- `index.md` explains the run, observed evidence, file layout, limitations, and LLM workflow.
+- `run.json` records versions, sampling, monitored signals, and built-in reducer configuration.
 - `modules.json` records selected module types, aliases, and parameter counts once per run.
 - Each numbered snapshot records one sampled forward and, when observed, its backward gradients.
 
@@ -385,7 +248,8 @@ forwards remain separate, and reused modules retain a distinct `call_index` for 
 - Injection adds no parameters, buffers, or modules, so `model.state_dict()` remains unchanged.
 - Hooks observe tensors without replacing model outputs or gradients.
 - Unsampled module hooks take a cheap inactive path and do not call reducers.
-- Sampled reductions run on the tensor's device; only compact scalar results move to CPU.
+- Sampled reductions run on the tensor's device; only compact scalar and histogram results move to
+  CPU.
 - Raw activations and gradients are never copied to disk.
 - Snapshot files are strict JSON and use atomic replacement, so readers do not see partial writes.
 - Duplicate injection raises `ObserverAlreadyAttachedError` instead of silently adding hooks.
@@ -401,11 +265,11 @@ only on PyTorch and the Python standard library.
 
 The current alpha supports CPU tensors and floating-point FP32, FP16, BF16, and FP64 diagnostics.
 The test suite covers nested outputs, shared modules, multiple forwards combined into one
-backward, inference-only execution, isolated reducer errors, composite output, and a real Lightning
-`TensorBoardLogger`. Lightning, TensorBoard, and torchvision remain optional development/example
-dependencies; they are not core wheel dependencies. CUDA, Accelerate, and `torch.compile` behavior
-remain roadmap items and are not claimed as supported until they receive dedicated compatibility
-tests.
+backward, inference-only execution, isolated reducer errors, lossless histogram projection,
+generated LLM run indexes, composite output, and a real Lightning `TensorBoardLogger`. Lightning,
+TensorBoard, and torchvision remain optional development/example dependencies; they are not core
+wheel dependencies. CUDA, Accelerate, and `torch.compile` behavior remain roadmap items and are not
+claimed as supported until they receive dedicated compatibility tests.
 
 Next development phases add input and parameter probes, richer reducer policies, aggregate
 summaries, evidence-backed comparison and insight reports, quantization-oriented metrics,
@@ -428,7 +292,7 @@ If TorchInstruments supports your research or engineering work, cite it as:
   author  = {Vadym Stupakov},
   title   = {TorchInstruments: Passive PyTorch Model Telemetry},
   year    = {2026},
-  version = {0.2.0},
+  version = {0.3.0},
   url     = {https://github.com/Red-Eyed/torchinstruments}
 }
 ```

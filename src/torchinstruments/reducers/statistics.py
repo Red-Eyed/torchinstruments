@@ -9,6 +9,7 @@ from typing import Literal, cast
 
 import torch
 
+from torchinstruments.records import JsonSetting
 from torchinstruments.reducers.base import ReducedScalar, Reducer, ReductionResult
 
 _MetricName = Literal["mean", "std", "rms", "max_abs", "finite_fraction"]
@@ -31,6 +32,14 @@ class _StatisticReducer:
         """Return only the configured built-in statistics for ``tensor``."""
         statistics = _statistics(tensor, self.metrics)
         return {name: statistics[name] for name in self.metrics}
+
+    def reducer_type(self) -> str:
+        """Identify the fused built-in scalar-statistics reducer."""
+        return "statistics"
+
+    def reducer_settings(self) -> Mapping[str, JsonSetting]:
+        """Record the exact scalar metric names produced by this reducer."""
+        return {"metrics": self.metrics}
 
 
 def default_reducers() -> tuple[Reducer, ...]:

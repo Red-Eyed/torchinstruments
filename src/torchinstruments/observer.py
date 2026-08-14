@@ -21,16 +21,19 @@ from torchinstruments.pytree import iter_tensor_leaves
 from torchinstruments.records import (
     SCHEMA_VERSION,
     Absent,
+    CollectionRecord,
     ErrorRecord,
     ModuleCallRecord,
     ModuleRecord,
+    ReducerRecord,
     RunRecord,
     SamplingRecord,
     SnapshotRecord,
     SnapshotState,
     TensorRecord,
 )
-from torchinstruments.reducers import Reducer, reduce_tensor
+from torchinstruments.reducers import HistogramReducer, Reducer, reduce_histograms, reduce_tensor
+from torchinstruments.reducers.base import DescribedReducer
 from torchinstruments.sampling import SamplingEvent, SamplingPolicy
 from torchinstruments.sampling.base import DescribedSamplingPolicy
 from torchinstruments.selectors import ModuleSelector
@@ -183,6 +186,7 @@ class Observer:
         sampler: SamplingPolicy,
         selector: ModuleSelector,
         reducers: Sequence[Reducer],
+        histograms: Sequence[HistogramReducer],
         sink: Sink,
         error_policy: ErrorPolicy,
         monotonic_clock: Callable[[], float] = time.monotonic,
@@ -194,6 +198,7 @@ class Observer:
         self._sampler = sampler
         self._selector = selector
         self._reducers = tuple(reducers)
+        self._histogram_reducers = tuple(histograms)
         self._sink = sink
         self._error_policy = error_policy
         self._monotonic_clock = monotonic_clock
@@ -221,6 +226,11 @@ class Observer:
             torch_version=str(torch.__version__),
             observer_version=package_version("torchinstruments"),
             sampling=self._sampling_record(),
+            collection=CollectionRecord(
+                signals=("module_outputs", "module_output_gradients"),
+                scalar_reducers=self._reducer_records(self._reducers),
+                histogram_reducers=self._reducer_records(self._histogram_reducers),
+            ),
         )
         self._sink.initialize(run, module_records)
 
@@ -290,6 +300,22 @@ class Observer:
             )
         return SamplingRecord(type=type(self._sampler).__qualname__, settings={})
 
+    def _reducer_records(self, reducers: Sequence[object]) -> tuple[ReducerRecord, ...]:
+        """Describe built-in reducers and identify opaque custom callables by type."""
+        records: list[ReducerRecord] = []
+        for reducer in reducers:
+            if isinstance(reducer, DescribedReducer):
+                records.append(
+                    ReducerRecord(
+                        type=reducer.reducer_type(),
+                        settings=dict(reducer.reducer_settings()),
+                    )
+                )
+                continue
+            callable_name = getattr(reducer, "__qualname__", type(reducer).__qualname__)
+            records.append(ReducerRecord(type=callable_name, settings={}))
+        return tuple(records)
+
     def _root_forward_pre_hook(self, _module: nn.Module, _inputs: tuple[object, ...]) -> None:
         """Choose sampling once per root forward and push its context-local state."""
         forward_index = self._next_forward_index()
@@ -356,7 +382,10 @@ class Observer:
             try:
                 for leaf in iter_tensor_leaves(output, "output"):
                     try:
-                        record = self._tensor_record(leaf.tensor)
+                        record = self._tensor_record(
+                            leaf.tensor,
+                            snapshot_id=context.snapshot_id,
+                        )
                         context.add_output(module_name, call, leaf.path, leaf.tensor, record)
                     except Exception as error:
                         self._handle_error(
@@ -396,7 +425,13 @@ class Observer:
                         continue
                     for binding in target_bindings:
                         try:
-                            builder.add_output_gradient(binding, self._tensor_record(gradient))
+                            builder.add_output_gradient(
+                                binding,
+                                self._tensor_record(
+                                    gradient,
+                                    snapshot_id=builder.snapshot_id,
+                                ),
+                            )
                         except Exception as error:
                             self._handle_error(
                                 error,
@@ -434,9 +469,14 @@ class Observer:
         with self._gradient_handles_lock:
             self._gradient_hook_handles.discard(handle)
 
-    def _tensor_record(self, tensor: torch.Tensor) -> TensorRecord:
-        """Reduce a tensor into metadata and CPU-native scalar diagnostics."""
+    def _tensor_record(self, tensor: torch.Tensor, *, snapshot_id: int) -> TensorRecord:
+        """Reduce a tensor into metadata and compact CPU-native diagnostics."""
         reduction = reduce_tensor(tensor, self._reducers)
+        histogram_reduction = reduce_histograms(
+            tensor,
+            self._histogram_reducers,
+            snapshot_id=snapshot_id,
+        )
         dtype = str(tensor.dtype).removeprefix("torch.")
         return TensorRecord(
             shape=tuple(tensor.shape),
@@ -445,6 +485,8 @@ class Observer:
             numel=tensor.numel(),
             stats=reduction.stats,
             unavailable_stats=reduction.unavailable_stats,
+            histograms=histogram_reduction.histograms,
+            unavailable_histograms=histogram_reduction.unavailable_histograms,
         )
 
     def _next_forward_index(self) -> int:

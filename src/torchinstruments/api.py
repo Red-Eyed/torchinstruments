@@ -15,7 +15,7 @@ from torchinstruments.errors import (
     parse_error_policy,
 )
 from torchinstruments.observer import Observer
-from torchinstruments.reducers import Reducer, default_reducers
+from torchinstruments.reducers import HistogramReducer, Reducer, default_reducers
 from torchinstruments.sampling import SamplingPolicy, TimedSampler
 from torchinstruments.selectors import ModuleSelector, leaf_modules
 from torchinstruments.sinks import DirectorySink, Sink
@@ -42,13 +42,17 @@ def inject_observer(
     sampler: SamplingPolicy | _UseDefault = _USE_DEFAULT,
     selector: ModuleSelector | _UseDefault = _USE_DEFAULT,
     reducers: Sequence[Reducer] | _UseDefault = _USE_DEFAULT,
+    histograms: Sequence[HistogramReducer] = (),
     sink: Sink | _UseDefault = _USE_DEFAULT,
     error_policy: ErrorPolicy | str = ErrorPolicy.WARN,
 ) -> None:
     """Attach passive telemetry hooks to ``model`` in place.
 
     Convenience arguments are mutually exclusive with their corresponding injected component:
-    ``interval`` with ``sampler``, and ``output_dir`` with ``sink``.
+    ``interval`` with ``sampler``, and ``output_dir`` with ``sink``. ``histograms`` is empty by
+    default because distribution reduction is more expensive than scalar diagnostics; each
+    configured histogram owns an independent snapshot cadence. Collection errors follow
+    ``error_policy``, and successful attachment returns ``None``.
     """
     if hasattr(model, _OBSERVER_ATTRIBUTE):
         raise ObserverAlreadyAttachedError("model already has a TorchInstruments observer")
@@ -63,6 +67,7 @@ def inject_observer(
         sampler=resolved_sampler,
         selector=resolved_selector,
         reducers=resolved_reducers,
+        histograms=tuple(histograms),
         sink=resolved_sink,
         error_policy=parse_error_policy(error_policy),
     )

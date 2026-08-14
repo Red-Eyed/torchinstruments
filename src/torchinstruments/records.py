@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TypeAlias
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,7 @@ class Absent:
 
 
 JsonScalar: TypeAlias = bool | float | int | str
+JsonSetting: TypeAlias = JsonScalar | tuple[JsonScalar, ...]
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,23 @@ class SamplingRecord:
 
 
 @dataclass(frozen=True)
+class ReducerRecord:
+    """Describe one configured reducer using stable JSON-compatible settings."""
+
+    type: str
+    settings: Mapping[str, JsonSetting]
+
+
+@dataclass(frozen=True)
+class CollectionRecord:
+    """Describe the signal boundaries and reducers configured for one run."""
+
+    signals: tuple[str, ...]
+    scalar_reducers: tuple[ReducerRecord, ...]
+    histogram_reducers: tuple[ReducerRecord, ...]
+
+
+@dataclass(frozen=True)
 class RunRecord:
     """Store immutable metadata shared by every snapshot in one observer run."""
 
@@ -38,6 +56,7 @@ class RunRecord:
     torch_version: str
     observer_version: str
     sampling: SamplingRecord
+    collection: CollectionRecord
 
 
 @dataclass(frozen=True)
@@ -51,6 +70,27 @@ class ModuleRecord:
 
 
 @dataclass(frozen=True)
+class HistogramRecord:
+    """Store a finite-value histogram without retaining its source tensor.
+
+    Regular bins cover consecutive intervals defined by ``bin_edges``. Values below and above
+    that range remain visible through explicit underflow and overflow counts. The compact moments
+    are sufficient to reproduce TensorBoard's pre-aggregated histogram representation.
+    """
+
+    bin_edges: tuple[float, ...]
+    bin_counts: tuple[int, ...]
+    finite_count: int
+    nonfinite_count: int
+    underflow_count: int
+    overflow_count: int
+    minimum: float
+    maximum: float
+    sum: float
+    sum_squares: float
+
+
+@dataclass(frozen=True)
 class TensorRecord:
     """Represent tensor metadata and compact scalar diagnostics without raw data."""
 
@@ -60,6 +100,8 @@ class TensorRecord:
     numel: int
     stats: Mapping[str, float]
     unavailable_stats: Mapping[str, str]
+    histograms: Mapping[str, HistogramRecord]
+    unavailable_histograms: Mapping[str, str]
 
 
 @dataclass(frozen=True)

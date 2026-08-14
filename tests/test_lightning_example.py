@@ -23,6 +23,7 @@ def test_lightning_example_writes_json_and_tensorboard(tmp_path: Path) -> None:
         validation_batches=1,
         batch_size=16,
         sample_every_n_forwards=1,
+        histogram_every_n_snapshots=1,
     )
     train_loader = _mnist_shaped_loader(samples=48)
     validation_loader = _mnist_shaped_loader(samples=16)
@@ -38,7 +39,10 @@ def test_lightning_example_writes_json_and_tensorboard(tmp_path: Path) -> None:
         "forward_complete",
     ]
 
-    events = EventAccumulator(str(tensorboard_dir)).Reload()
+    events = EventAccumulator(
+        str(tensorboard_dir),
+        size_guidance={"histograms": 0},
+    ).Reload()
     scalar_tags = _read_scalar_tags(events)
     output_rms = "torchinstruments/modules/0/call_0/output/rms"
     gradient_rms = "torchinstruments/modules/7/call_0/grad_output/rms"
@@ -47,6 +51,22 @@ def test_lightning_example_writes_json_and_tensorboard(tmp_path: Path) -> None:
     assert "task/validation_accuracy" in scalar_tags
     assert [event.step for event in events.Scalars(output_rms)] == [0, 1, 2, 3]
     assert [event.step for event in events.Scalars(gradient_rms)] == [0, 1, 2]
+    histogram_tags = _read_histogram_tags(events)
+    output_distribution = "torchinstruments/modules/0/call_0/output/histograms/distribution"
+    gradient_distribution = "torchinstruments/modules/7/call_0/grad_output/histograms/distribution"
+    assert output_distribution in histogram_tags
+    assert gradient_distribution in histogram_tags
+    assert [event.step for event in events.Histograms(output_distribution)] == [0, 1, 2, 3]
+    assert [event.step for event in events.Histograms(gradient_distribution)] == [0, 1, 2]
+
+    first_snapshot = read_snapshot(snapshot_paths[0])
+    json_histogram = first_snapshot["modules"]["0"][0]["outputs"]["output"]["histograms"][
+        "distribution"
+    ]
+    tensorboard_histogram = events.Histograms(output_distribution)[0].histogram_value
+    assert tensorboard_histogram.num == json_histogram["finite_count"]
+    assert tensorboard_histogram.sum == json_histogram["sum"]
+    assert tensorboard_histogram.sum_squares == json_histogram["sum_squares"]
 
 
 def _mnist_shaped_loader(*, samples: int) -> DataLoader:
@@ -66,5 +86,19 @@ def _read_scalar_tags(events: EventAccumulator) -> set[str]:
     for tag in raw_tags:
         if not isinstance(tag, str):
             raise TypeError("TensorBoard scalar tag must be a string")
+        tags.add(tag)
+    return tags
+
+
+def _read_histogram_tags(events: EventAccumulator) -> set[str]:
+    """Validate TensorBoard's untyped histogram-tag payload at the test boundary."""
+    raw_tags: object = events.Tags()["histograms"]
+    if not isinstance(raw_tags, list):
+        raise TypeError("TensorBoard histogram tags must be a list")
+
+    tags: set[str] = set()
+    for tag in raw_tags:
+        if not isinstance(tag, str):
+            raise TypeError("TensorBoard histogram tag must be a string")
         tags.add(tag)
     return tags

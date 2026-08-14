@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Protocol
-from urllib.parse import quote
 
 from torchinstruments.records import (
     ModuleRecord,
@@ -13,6 +12,7 @@ from torchinstruments.records import (
     SnapshotState,
     TensorRecord,
 )
+from torchinstruments.sinks.paths import path_segment, tensor_path_prefix
 
 
 class MetricLogger(Protocol):
@@ -97,16 +97,10 @@ def _tensor_metrics(
 ) -> list[tuple[str, float]]:
     """Build stable metric paths for one selected module invocation."""
     records: list[tuple[str, float]] = []
-    module_segment = "@root" if not module_name else _path_segment(module_name)
     for tensor_path in sorted(tensors):
         tensor = tensors[tensor_path]
-        base = f"modules/{module_segment}/call_{call_index}/{_path_segment(tensor_path)}"
+        base = tensor_path_prefix(module_name, call_index, tensor_path)
         for statistic_name in sorted(tensor.stats):
-            metric_name = f"{base}/{_path_segment(statistic_name)}"
+            metric_name = f"{base}/{path_segment(statistic_name)}"
             records.append((metric_name, tensor.stats[statistic_name]))
     return records
-
-
-def _path_segment(value: str) -> str:
-    """Escape slash-like separators while preserving readable dotted names."""
-    return quote(value, safe="._-")

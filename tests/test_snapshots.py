@@ -13,7 +13,7 @@ from dirty_equals import IsNonNegative, IsNow, IsPartialDict
 from torch import nn
 
 from tests.json_records import read_modules, read_run, read_snapshot
-from torchinstruments import AlwaysSampler, inject_observer, remove_observer
+from torchinstruments import AlwaysSampler, histogram, inject_observer, remove_observer
 from torchinstruments.reducers import ReducedScalar
 
 
@@ -182,6 +182,34 @@ def test_empty_tensor_records_unavailable_statistics(telemetry_dir: Path) -> Non
     remove_observer(model)
 
 
+def test_snapshot_json_contains_lossless_histogram_data(telemetry_dir: Path) -> None:
+    """Persist bins, outliers, moments, and non-finite counts in canonical JSON."""
+    model = nn.Identity()
+    inject_observer(
+        model,
+        sampler=AlwaysSampler(),
+        histograms=[
+            histogram(bins=2, value_range=(-1.0, 1.0), every_n_snapshots=1),
+        ],
+        output_dir=telemetry_dir,
+    )
+
+    model(torch.tensor([-2.0, -1.0, 0.0, 1.0, 2.0, float("nan")]))
+
+    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
+    output = snapshot["modules"][""][0]["outputs"]["output"]
+    record = output["histograms"]["distribution"]
+    assert record["bin_edges"] == [-1.0, 0.0, 1.0]
+    assert record["bin_counts"] == [1, 2]
+    assert record["underflow_count"] == 1
+    assert record["overflow_count"] == 1
+    assert record["finite_count"] == 5
+    assert record["nonfinite_count"] == 1
+    assert record["sum"] == pytest.approx(0.0)
+    assert record["sum_squares"] == pytest.approx(10.0)
+    remove_observer(model)
+
+
 @pytest.mark.parametrize("error_policy", ["warn", "ignore"])
 def test_reducer_errors_are_recorded(
     telemetry_dir: Path,
@@ -244,11 +272,23 @@ def test_run_and_snapshot_records_are_versioned(telemetry_dir: Path) -> None:
 
     run = read_run(telemetry_dir / "run.json")
     snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    assert run["schema_version"] == 1
+    assert run["schema_version"] == 2
     assert run["created_at"] == IsNow(iso_string=True, tz=UTC)
     assert run["sampling"] == {"settings": {}, "type": "always"}
+    assert run["collection"] == {
+        "signals": ["module_outputs", "module_output_gradients"],
+        "scalar_reducers": [
+            {
+                "type": "statistics",
+                "settings": {
+                    "metrics": ["mean", "std", "rms", "max_abs", "finite_fraction"],
+                },
+            }
+        ],
+        "histogram_reducers": [],
+    }
     assert snapshot == IsPartialDict(
-        schema_version=1,
+        schema_version=2,
         snapshot_id=0,
         collection_duration_ms=IsNonNegative,
     )

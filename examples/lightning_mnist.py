@@ -18,7 +18,8 @@ from torchinstruments import (
     CompositeSink,
     DirectorySink,
     EveryNForwardsSampler,
-    MetricLoggerSink,
+    TensorBoardSink,
+    histogram,
     inject_observer,
     remove_observer,
 )
@@ -36,6 +37,7 @@ class MnistRunConfig:
     epochs: int = 1
     batch_size: int = 64
     sample_every_n_forwards: int = 25
+    histogram_every_n_snapshots: int = 4
 
     def __post_init__(self) -> None:
         """Reject non-positive limits that would make the demonstration misleading."""
@@ -45,6 +47,7 @@ class MnistRunConfig:
             "epochs": self.epochs,
             "batch_size": self.batch_size,
             "sample_every_n_forwards": self.sample_every_n_forwards,
+            "histogram_every_n_snapshots": self.histogram_every_n_snapshots,
         }
         for name, value in limits.items():
             if value <= 0:
@@ -146,8 +149,8 @@ def run_training(
 ) -> Path:
     """Train with one logger shared by Lightning and TorchInstruments.
 
-    The returned path contains TensorBoard event files. Full structured snapshots remain in the
-    configured telemetry directory because scalar loggers are a lossy dashboard projection.
+    The returned path contains TensorBoard event files. Full structured snapshots, including the
+    data needed to reconstruct each histogram, remain in the configured telemetry directory.
     """
     L.seed_everything(7, workers=True)
     model = MnistClassifier()
@@ -158,7 +161,7 @@ def run_training(
     )
     sink = CompositeSink(
         DirectorySink(config.telemetry_dir),
-        MetricLoggerSink(logger),
+        TensorBoardSink(logger),
     )
 
     # Instrument the network invoked by training_step; Lightning does not guarantee that the
@@ -166,6 +169,13 @@ def run_training(
     inject_observer(
         model.network,
         sampler=EveryNForwardsSampler(config.sample_every_n_forwards),
+        histograms=[
+            histogram(
+                bins=64,
+                value_range=(-8.0, 8.0),
+                every_n_snapshots=config.histogram_every_n_snapshots,
+            ),
+        ],
         sink=sink,
     )
     trainer = _build_trainer(config, logger)

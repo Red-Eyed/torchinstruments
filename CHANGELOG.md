@@ -2,6 +2,36 @@
 
 All notable changes to TorchInstruments are documented here.
 
+## [0.3.0] - 2026-08-14
+
+### Highlights
+
+- Add opt-in activation and output-gradient histograms that remain fully reproducible from the
+  canonical JSON telemetry.
+- Generate a bounded `index.md` in every run directory so humans and LLMs can understand and
+  analyze a run without prior knowledge of the schema.
+
+### New Features
+
+- Add configurable fixed-range or dynamic histograms with independent every-N-snapshots sampling.
+- Record bin edges and counts, underflow and overflow, finite prevalence, extrema, and compact
+  moments without persisting raw tensors.
+- Add `TensorBoardSink` for scalar and pre-aggregated histogram projection through externally owned
+  Lightning-compatible loggers.
+- Record monitored signals and built-in reducer configuration in `run.json`, while identifying
+  opaque custom reducers by type.
+
+### Documentation
+
+- Rewrite the README around diagnostic outcomes, concrete next experiments, and the simple
+  attach-train-analyze workflow.
+- Extend the real MNIST example with JSON-backed TensorBoard histograms.
+
+### Developers
+
+- Add unit and real TensorBoard event coverage proving histogram events are derived from the same
+  normalized records written to JSON.
+
 ## [0.2.0] - 2026-08-14
 
 ### Highlights

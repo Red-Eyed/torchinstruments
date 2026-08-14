@@ -20,16 +20,21 @@ Key terms:
 - **Module selector**: a predicate evaluated during injection to choose which module objects get
   collection hooks.
 - **Reducer**: a callable that detaches one tensor and returns named compact scalar diagnostics.
+- **Histogram reducer**: an opt-in callable with an independent snapshot cadence that emits a
+  complete pre-aggregated distribution record.
 - **Sink**: the side-effect boundary that initializes run metadata and persists snapshots.
 - **Metric logger sink**: a lossy scalar projection that uses snapshot IDs as logger steps and
   leaves ownership of the supplied logger with the caller.
+- **TensorBoard sink**: a scalar and histogram projection derived from normalized records; it
+  never receives source tensors and never owns the supplied logger.
 - **Composite sink**: an ordered fan-out that sends the same lifecycle records to multiple sinks.
 - **Absent**: a typed record carrying the reason a canonical value is unavailable; it replaces
   unexplained nulls in telemetry records.
 
-The canonical artifact is strict UTF-8 JSON. A run directory contains `run.json`, `modules.json`,
-and monotonically numbered files under `snapshots/`. Snapshot rewrites use atomic filesystem
-replacement and reject NaN or infinity during serialization.
+The canonical telemetry artifact is strict UTF-8 JSON. A run directory also contains a derived,
+bounded `index.md` for human and LLM discovery, plus `run.json`, `modules.json`, and monotonically
+numbered files under `snapshots/`. Snapshot and index rewrites use atomic filesystem replacement;
+JSON rejects NaN or infinity during serialization.
 
 ## Development Commands
 
@@ -68,9 +73,10 @@ Core abstractions are structural `Protocol` types:
 - `SamplingPolicy` in `sampling/base.py` decides at root-forward boundaries.
 - `ModuleSelector` in `selectors/base.py` selects module objects during attachment.
 - `Reducer` in `reducers/base.py` produces named scalar reductions without inheritance.
+- `HistogramReducer` in `reducers/histograms.py` produces independently sampled distributions.
 - `Sink` in `sinks/base.py` owns persistence and can later be replaced by an asynchronous sink.
-- `MetricLoggerSink` projects only scalar statistics; `CompositeSink` preserves full JSON while
-  sending the same snapshots to dashboards.
+- `MetricLoggerSink` projects only scalar statistics; `TensorBoardSink` derives scalars and
+  histograms from the same records that `DirectorySink` serializes.
 - Frozen dataclasses in `records.py` define the normalized schema before serialization.
 
 The observer is intentionally attached as a plain private Python attribute. Never register it as
@@ -92,6 +98,8 @@ an `nn.Module`, parameter, or buffer, because injection must leave `state_dict()
   bare JSON nulls or non-standard NaN/Infinity tokens.
 - Built-in statistics operate on finite values and report `finite_fraction` against the original
   tensor. Standard deviation is population standard deviation with correction zero.
+- Histogram JSON must contain every bin, outlier count, and compact moment required to replay the
+  TensorBoard event. A dashboard adapter must never recompute from or receive raw tensors.
 - Hooks must return without replacing module output or gradients. The `raise` error policy is the
   only mode allowed to break a valid model execution.
 - Metric logger steps are telemetry snapshot IDs, never inferred optimizer steps. Externally

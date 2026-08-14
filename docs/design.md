@@ -53,8 +53,8 @@ dependency.
   identify optimizer-step boundaries.
 - Calling a root forward a training step. A trainer may perform several forwards per optimizer
   step, or perform forwards without optimization.
-- Providing dashboards or integrations with TensorBoard, W&B, Lightning, or Accelerate in the
-  core package.
+- Depending on TensorBoard, W&B, Lightning, or Accelerate in the core package. Optional adapters
+  may target their structural protocols without importing those frameworks.
 - Persisting raw tensors by default.
 - Claiming `torch.compile` compatibility before both injection orderings are tested.
 
@@ -70,6 +70,7 @@ flowchart TD
     R --> REC[Typed records]
     REC --> S[Sink]
     S --> J[Strict JSON files]
+    S --> TB[TensorBoard projection]
 ```
 
 The observer is an orchestration shell. Tensor traversal and reduction are functional core
@@ -103,27 +104,35 @@ inject_observer(
     sampler=AlwaysSampler(),
     selector=leaf_modules(),
     reducers=default_reducers(),
+    histograms=[
+        histogram(
+            bins=64,
+            value_range=(-8.0, 8.0),
+            every_n_snapshots=10,
+        ),
+    ],
     sink=DirectorySink("stats"),
 )
 ```
 
 Convenience arguments and their corresponding injected components are mutually exclusive.
 
-Scalar loggers are adapted at the sink boundary without adding trainer dependencies to the core:
+TensorBoard is adapted at the sink boundary without adding trainer dependencies to the core:
 
 ```python
 inject_observer(
     model,
     sink=CompositeSink(
         DirectorySink("stats"),
-        MetricLoggerSink(logger),
+        TensorBoardSink(logger),
     ),
 )
 ```
 
-`MetricLoggerSink` uses snapshot IDs as logger steps because root forwards cannot be mapped
-universally to optimizer steps. The adapter never finalizes an externally owned logger. The
-directory sink remains canonical because a scalar logger cannot preserve the full record schema.
+`TensorBoardSink` uses snapshot IDs as logger steps because root forwards cannot be mapped
+universally to optimizer steps. It projects scalars and pre-aggregated histograms from normalized
+records and never receives raw tensors. The adapter never finalizes an externally owned logger.
+The directory sink remains canonical and contains every value required to replay dashboard events.
 
 ## Snapshot lifecycle
 
@@ -144,6 +153,7 @@ exact forward. When those gradients arrive, the same snapshot is atomically repl
 
 ```text
 stats/
+    index.md
     run.json
     modules.json
     snapshots/
@@ -151,10 +161,16 @@ stats/
         000001.json
 ```
 
+`index.md` is a bounded, atomically updated guide for humans and LLMs. It describes run progress,
+configured and observed telemetry, every artifact, evidence limits, and a ready-to-use prompt.
 Snapshot filenames contain only monotonic IDs. UTC timestamps are stored inside records. JSON
-serialization sorts object keys and rejects NaN and infinity. If a reducer cannot produce a
-finite scalar, the metric is omitted from `stats` and its reason is recorded in
-`unavailable_stats`.
+serialization sorts object keys and rejects NaN and infinity. If a reducer cannot produce a finite
+scalar, the metric is omitted from `stats` and its reason is recorded in `unavailable_stats`.
+
+Opt-in histograms store regular bin edges and counts, explicit underflow and overflow counts,
+finite and non-finite counts, minimum, maximum, sum, and sum of squares. An unavailable histogram
+is recorded in `unavailable_histograms` with its reason. This schema is the source of truth for
+both JSON analysis and TensorBoard rendering.
 
 Shared module objects have one hook and a canonical module name. All aliases appear in
 `modules.json`. Repeated calls to the same module within one root forward are represented as
@@ -163,9 +179,10 @@ separate ordered calls rather than overwriting one another.
 ## Performance constraints
 
 Unsampled module hooks return after one context lookup. During sampled execution, reductions run
-on the tensor device and only compact scalar tensors cross to CPU. Built-in statistics operate on
-finite values in a safe floating dtype; `finite_fraction` reports how much of the original tensor
-was finite. Population standard deviation uses correction zero.
+on the tensor device and only compact scalar or histogram results cross to CPU. Built-in statistics
+operate on finite values in a safe floating dtype; `finite_fraction` reports how much of the
+original tensor was finite. Population standard deviation uses correction zero. Histograms are
+opt-in and own an independent every-N-snapshots cadence because binning is more expensive.
 
 `collection_duration_ms` measures observer reduction time. It deliberately excludes the model's
 own forward time and JSON write time. Accurate CUDA kernel duration requires device events and is
@@ -193,6 +210,13 @@ output until backward would lose inference-only telemetry.
 **Decision**: Emit output metrics on `forward_complete` and only newly available gradient metrics
 on `backward_observed`. This avoids duplicate tag/step pairs without retaining unbounded per-run
 deduplication state. Use `CompositeSink` when both full records and live scalar trends are needed.
+
+### Histogram source of truth
+
+**Decision**: Reduce each histogram once into a normalized record. `DirectorySink` serializes that
+record, while `TensorBoardSink` derives `add_histogram_raw()` arguments from the same fields. This
+keeps TensorBoard reproducible from JSON and prevents dashboard integration from seeing raw model
+tensors.
 
 ### License
 

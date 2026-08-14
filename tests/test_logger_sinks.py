@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,8 @@ from torchinstruments import (
     CompositeSink,
     DirectorySink,
     MetricLoggerSink,
+    TensorBoardSink,
+    histogram,
     inject_observer,
     remove_observer,
 )
@@ -30,6 +33,22 @@ class _LogEvent:
     step: int
 
 
+@dataclass(frozen=True)
+class _HistogramEvent:
+    """Capture one pre-aggregated TensorBoard histogram call."""
+
+    tag: str
+    minimum: float
+    maximum: float
+    count: int
+    sum: float
+    sum_squares: float
+    bucket_limits: tuple[float, ...]
+    bucket_counts: tuple[float, ...]
+    step: int
+    walltime: float
+
+
 class _RecordingLogger:
     """Record structurally compatible metric calls without an external service."""
 
@@ -42,6 +61,59 @@ class _RecordingLogger:
         if step is None:
             raise ValueError("test logger requires an explicit step")
         self.events.append(_LogEvent(metrics=dict(metrics), step=step))
+
+
+class _RecordingHistogramWriter:
+    """Record compact histogram calls without importing a dashboard implementation."""
+
+    def __init__(self) -> None:
+        """Start with no projected histogram events."""
+        self.events: list[_HistogramEvent] = []
+
+    def add_histogram_raw(
+        self,
+        tag: str,
+        min: float,
+        max: float,
+        num: int,
+        sum: float,
+        sum_squares: float,
+        bucket_limits: Sequence[float],
+        bucket_counts: Sequence[float],
+        global_step: int | None = None,
+        walltime: float | None = None,
+    ) -> None:
+        """Preserve one raw histogram call and require replay metadata."""
+        if global_step is None or walltime is None:
+            raise ValueError("test writer requires a step and walltime")
+        self.events.append(
+            _HistogramEvent(
+                tag=tag,
+                minimum=min,
+                maximum=max,
+                count=num,
+                sum=sum,
+                sum_squares=sum_squares,
+                bucket_limits=tuple(bucket_limits),
+                bucket_counts=tuple(bucket_counts),
+                step=global_step,
+                walltime=walltime,
+            )
+        )
+
+
+class _RecordingTensorBoardLogger(_RecordingLogger):
+    """Expose one recording histogram writer through Lightning's logger shape."""
+
+    def __init__(self) -> None:
+        """Initialize scalar and histogram event collections."""
+        super().__init__()
+        self._experiment = _RecordingHistogramWriter()
+
+    @property
+    def experiment(self) -> _RecordingHistogramWriter:
+        """Return the externally owned recording writer."""
+        return self._experiment
 
 
 class _FailingWriteSink:
@@ -129,3 +201,45 @@ def test_metric_logger_sink_requires_a_non_empty_prefix() -> None:
     """Reject metric paths without an identifying namespace."""
     with pytest.raises(ValueError, match="prefix"):
         MetricLoggerSink(_RecordingLogger(), prefix=" / ")
+
+
+def test_tensorboard_histogram_is_derived_from_canonical_json(telemetry_dir: Path) -> None:
+    """Project the exact JSON histogram moments and counts without a raw tensor."""
+    logger = _RecordingTensorBoardLogger()
+    model = nn.Identity()
+    sink = CompositeSink(
+        DirectorySink(telemetry_dir),
+        TensorBoardSink(logger),
+    )
+    inject_observer(
+        model,
+        sampler=AlwaysSampler(),
+        histograms=[
+            histogram(bins=2, value_range=(-1.0, 1.0), every_n_snapshots=1),
+        ],
+        sink=sink,
+        error_policy="raise",
+    )
+
+    model(torch.tensor([-2.0, -1.0, 0.0, 1.0, 2.0]))
+    remove_observer(model)
+
+    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
+    json_record = snapshot["modules"][""][0]["outputs"]["output"]["histograms"]["distribution"]
+    event = logger.experiment.events[0]
+    assert event.tag == "torchinstruments/modules/@root/call_0/output/histograms/distribution"
+    assert event.minimum == json_record["minimum"]
+    assert event.maximum == json_record["maximum"]
+    assert event.count == json_record["finite_count"]
+    assert event.sum == json_record["sum"]
+    assert event.sum_squares == json_record["sum_squares"]
+    assert event.bucket_counts == (
+        float(json_record["underflow_count"]),
+        *(float(count) for count in json_record["bin_counts"]),
+        float(json_record["overflow_count"]),
+    )
+    assert event.step == snapshot["snapshot_id"]
+    assert (
+        event.walltime
+        == datetime.fromisoformat(snapshot["timestamp"].replace("Z", "+00:00")).timestamp()
+    )

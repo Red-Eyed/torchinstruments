@@ -28,7 +28,13 @@ def write_json_atomic(path: Path, value: object) -> None:
         indent=2,
         sort_keys=True,
     )
-    payload += "\n"
+    write_text_atomic(path, payload)
+
+
+def write_text_atomic(path: Path, value: str) -> None:
+    """Atomically replace one UTF-8 text file after durable temporary-file flushing."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = value if value.endswith("\n") else f"{value}\n"
 
     descriptor, temporary_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     temporary_path = Path(temporary_name)
