@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TypeAlias
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -42,6 +42,7 @@ class ReducerRecord:
 class CollectionRecord:
     """Describe the signal boundaries and reducers configured for one run."""
 
+    invocation_capture: str
     signals: tuple[str, ...]
     scalar_reducers: tuple[ReducerRecord, ...]
     histogram_reducers: tuple[ReducerRecord, ...]

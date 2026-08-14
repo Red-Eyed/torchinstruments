@@ -16,6 +16,7 @@ import torch
 from torch import nn
 from torch.utils.hooks import RemovableHandle
 
+from torchinstruments.capture import CallCapture, CaptureCallbacks
 from torchinstruments.errors import ErrorPolicy
 from torchinstruments.pytree import iter_tensor_leaves
 from torchinstruments.records import (
@@ -177,7 +178,7 @@ class _SnapshotBuilder:
 
 
 class Observer:
-    """Orchestrate sampling, module hooks, reduction, and persistence."""
+    """Orchestrate sampling, invocation capture, reduction, and persistence."""
 
     def __init__(
         self,
@@ -189,6 +190,7 @@ class Observer:
         histograms: Sequence[HistogramReducer],
         sink: Sink,
         error_policy: ErrorPolicy,
+        capture: CallCapture,
         monotonic_clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         performance_clock: Callable[[], int] = time.perf_counter_ns,
@@ -201,6 +203,7 @@ class Observer:
         self._histogram_reducers = tuple(histograms)
         self._sink = sink
         self._error_policy = error_policy
+        self._capture = capture
         self._monotonic_clock = monotonic_clock
         self._wall_clock = wall_clock
         self._performance_clock = performance_clock
@@ -208,7 +211,6 @@ class Observer:
         self._snapshot_id = 0
         self._id_lock = threading.Lock()
         self._sink_lock = threading.Lock()
-        self._hook_handles: list[RemovableHandle] = []
         # Weak ownership lets completed or abandoned graphs release callback handles naturally,
         # while still allowing explicit observer removal to detach live callbacks.
         self._gradient_hook_handles: weakref.WeakSet[RemovableHandle] = weakref.WeakSet()
@@ -218,7 +220,7 @@ class Observer:
         )
 
     def attach(self) -> None:
-        """Initialize the sink and register every long-lived module hook once."""
+        """Initialize persistence and attach the configured invocation capture strategy."""
         selected_modules, module_records = self._select_modules()
         run = RunRecord(
             schema_version=SCHEMA_VERSION,
@@ -227,6 +229,7 @@ class Observer:
             observer_version=package_version("torchinstruments"),
             sampling=self._sampling_record(),
             collection=CollectionRecord(
+                invocation_capture=self._capture.capture_type(),
                 signals=("module_outputs", "module_output_gradients"),
                 scalar_reducers=self._reducer_records(self._reducers),
                 histogram_reducers=self._reducer_records(self._histogram_reducers),
@@ -235,24 +238,22 @@ class Observer:
         self._sink.initialize(run, module_records)
 
         try:
-            for module_name, module in selected_modules:
-                handle = module.register_forward_hook(self._module_forward_hook(module_name))
-                self._hook_handles.append(handle)
-            self._hook_handles.append(
-                self._model.register_forward_pre_hook(self._root_forward_pre_hook)
-            )
-            self._hook_handles.append(
-                self._model.register_forward_hook(self._root_forward_hook, always_call=True)
+            self._capture.attach(
+                self._model,
+                selected_modules,
+                CaptureCallbacks(
+                    start_root=self._start_root_forward,
+                    finish_root=self._finish_root_forward,
+                    observe_output=self._collect_module_output,
+                ),
             )
         except BaseException:
             self.remove()
             raise
 
     def remove(self) -> None:
-        """Remove module and graph hooks, then close the configured sink."""
-        for handle in self._hook_handles:
-            handle.remove()
-        self._hook_handles.clear()
+        """Remove invocation capture and graph hooks, then close the configured sink."""
+        self._capture.remove()
 
         with self._gradient_handles_lock:
             gradient_handles = tuple(self._gradient_hook_handles)
@@ -316,7 +317,7 @@ class Observer:
             records.append(ReducerRecord(type=callable_name, settings={}))
         return tuple(records)
 
-    def _root_forward_pre_hook(self, _module: nn.Module, _inputs: tuple[object, ...]) -> None:
+    def _start_root_forward(self) -> None:
         """Choose sampling once per root forward and push its context-local state."""
         forward_index = self._next_forward_index()
         event = SamplingEvent(
@@ -342,12 +343,7 @@ class Observer:
         stack = self._contexts.get()
         self._contexts.set((*stack, context))
 
-    def _root_forward_hook(
-        self,
-        _module: nn.Module,
-        _inputs: tuple[object, ...],
-        _output: object,
-    ) -> None:
+    def _finish_root_forward(self) -> None:
         """Close the current root-forward context and persist its forward snapshot."""
         stack = self._contexts.get()
         if not stack:
@@ -363,41 +359,34 @@ class Observer:
             self._register_gradient_hook(context, targets)
         self._write_snapshot(context)
 
-    def _module_forward_hook(
-        self, module_name: str
-    ) -> Callable[[nn.Module, tuple[object, ...], object], None]:
-        """Create a cheap inactive hook that collects outputs only in sampled contexts."""
+    def _collect_module_output(self, module_name: str, output: object) -> None:
+        """Reduce one selected output only while its root context is sampled."""
+        stack = self._contexts.get()
+        if not stack:
+            return
+        context = stack[-1]
+        if not isinstance(context, _SnapshotBuilder):
+            return
 
-        def collect(_module: nn.Module, _inputs: tuple[object, ...], output: object) -> None:
-            """Reduce supported output tensors for one selected module invocation."""
-            stack = self._contexts.get()
-            if not stack:
-                return
-            context = stack[-1]
-            if not isinstance(context, _SnapshotBuilder):
-                return
-
-            started_at = self._performance_clock()
-            call = context.add_module_call(module_name)
-            try:
-                for leaf in iter_tensor_leaves(output, "output"):
-                    try:
-                        record = self._tensor_record(
-                            leaf.tensor,
-                            snapshot_id=context.snapshot_id,
-                        )
-                        context.add_output(module_name, call, leaf.path, leaf.tensor, record)
-                    except Exception as error:
-                        self._handle_error(
-                            error,
-                            builder=context,
-                            module_name=module_name,
-                            probe=leaf.path,
-                        )
-            finally:
-                context.add_collection_duration(self._performance_clock() - started_at)
-
-        return collect
+        started_at = self._performance_clock()
+        call = context.add_module_call(module_name)
+        try:
+            for leaf in iter_tensor_leaves(output, "output"):
+                try:
+                    record = self._tensor_record(
+                        leaf.tensor,
+                        snapshot_id=context.snapshot_id,
+                    )
+                    context.add_output(module_name, call, leaf.path, leaf.tensor, record)
+                except Exception as error:
+                    self._handle_error(
+                        error,
+                        builder=context,
+                        module_name=module_name,
+                        probe=leaf.path,
+                    )
+        finally:
+            context.add_collection_duration(self._performance_clock() - started_at)
 
     def _register_gradient_hook(
         self,

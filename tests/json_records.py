@@ -85,6 +85,7 @@ class JsonReducerRecord(TypedDict):
 class JsonCollectionRecord(TypedDict):
     """Describe serialized collection boundaries consumed by tests."""
 
+    invocation_capture: str
     signals: list[str]
     scalar_reducers: list[JsonReducerRecord]
     histogram_reducers: list[JsonReducerRecord]

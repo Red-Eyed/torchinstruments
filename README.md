@@ -88,6 +88,17 @@ finally:
 There is no observer call inside the training loop. The first eligible model forward after each
 interval becomes a snapshot, and its backward is correlated automatically.
 
+If model code calls `forward` methods directly, enable direct-forward capture once:
+
+```python
+inject_observer(model, output_dir="stats", capture_direct_forwards=True)
+```
+
+This mode recursively wraps the root and selected leaf modules, so both `module(x)` and
+`module.forward(x)` are recorded. `remove_observer(model)` restores the prior `forward`
+attributes. Normal `module(x)` dispatch remains the recommended PyTorch style and uses native
+hooks by default; direct-forward capture is explicit because method wrapping is more invasive.
+
 For distribution evidence and TensorBoard output, see the
 [Lightning MNIST example](https://github.com/Red-Eyed/torchinstruments/blob/main/examples/lightning_mnist.py).
 It uses an explicit 64-bin range and a less frequent histogram cadence so cost and comparison
@@ -141,6 +152,7 @@ The default `inject_observer(model)` configuration has a deliberately bounded sc
 | Sampling unit | One root-model forward and its associated backward |
 | Sampling schedule | First root forward after each 60-second monotonic interval |
 | Selected modules | Leaf modules: modules with no registered child modules |
+| Invocation capture | Native PyTorch hooks; opt into wrappers for literal `.forward(...)` calls |
 | Forward signals | Every tensor found in selected-module outputs, including nested lists, tuples, and dictionaries |
 | Backward signals | The backpropagated gradient with respect to each differentiable selected-module output |
 | Tensor metadata | `shape`, `dtype`, `device`, and `numel` |
@@ -246,14 +258,16 @@ forwards remain separate, and reused modules retain a distinct `call_index` for 
 ## Safety and performance boundaries
 
 - Injection adds no parameters, buffers, or modules, so `model.state_dict()` remains unchanged.
-- Hooks observe tensors without replacing model outputs or gradients.
-- Unsampled module hooks take a cheap inactive path and do not call reducers.
+- Native hooks or opt-in forward wrappers observe tensors without replacing model outputs or
+  gradients.
+- Unsampled capture callbacks take a cheap inactive path and do not call reducers.
 - Sampled reductions run on the tensor's device; only compact scalar and histogram results move to
   CPU.
 - Raw activations and gradients are never copied to disk.
 - Snapshot files are strict JSON and use atomic replacement, so readers do not see partial writes.
 - Duplicate injection raises `ObserverAlreadyAttachedError` instead of silently adding hooks.
-- `remove_observer(model)` removes module and pending graph hooks and closes the sink.
+- `remove_observer(model)` removes capture behavior and pending graph hooks, restores wrapped
+  forwards, and closes the sink.
 
 Collection does add reduction and device-synchronization cost on sampled passes. Every snapshot
 records `collection_duration_ms` so telemetry cost remains visible rather than hidden.
@@ -266,10 +280,11 @@ only on PyTorch and the Python standard library.
 The current alpha supports CPU tensors and floating-point FP32, FP16, BF16, and FP64 diagnostics.
 The test suite covers nested outputs, shared modules, multiple forwards combined into one
 backward, inference-only execution, isolated reducer errors, lossless histogram projection,
-generated LLM run indexes, composite output, and a real Lightning `TensorBoardLogger`. Lightning,
-TensorBoard, and torchvision remain optional development/example dependencies; they are not core
-wheel dependencies. CUDA, Accelerate, and `torch.compile` behavior remain roadmap items and are not
-claimed as supported until they receive dedicated compatibility tests.
+generated LLM run indexes, mixed `module(...)`/`module.forward(...)` execution, composite output,
+and a real Lightning `TensorBoardLogger`. Lightning, TensorBoard, and torchvision remain optional
+development/example dependencies; they are not core wheel dependencies. CUDA, Accelerate, and
+`torch.compile` behavior remain roadmap items and are not claimed as supported until they receive
+dedicated compatibility tests.
 
 Next development phases add input and parameter probes, richer reducer policies, aggregate
 summaries, evidence-backed comparison and insight reports, quantization-oriented metrics,
@@ -292,7 +307,7 @@ If TorchInstruments supports your research or engineering work, cite it as:
   author  = {Vadym Stupakov},
   title   = {TorchInstruments: Passive PyTorch Model Telemetry},
   year    = {2026},
-  version = {0.3.0},
+  version = {0.4.0},
   url     = {https://github.com/Red-Eyed/torchinstruments}
 }
 ```

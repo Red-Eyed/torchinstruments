@@ -9,6 +9,7 @@ from pathlib import Path
 
 from torch import nn
 
+from torchinstruments.capture import ForwardCallCapture, HookCallCapture
 from torchinstruments.errors import (
     ErrorPolicy,
     ObserverAlreadyAttachedError,
@@ -45,14 +46,18 @@ def inject_observer(
     histograms: Sequence[HistogramReducer] = (),
     sink: Sink | _UseDefault = _USE_DEFAULT,
     error_policy: ErrorPolicy | str = ErrorPolicy.WARN,
+    capture_direct_forwards: bool = False,
 ) -> None:
-    """Attach passive telemetry hooks to ``model`` in place.
+    """Attach passive telemetry capture to ``model`` in place.
 
     Convenience arguments are mutually exclusive with their corresponding injected component:
     ``interval`` with ``sampler``, and ``output_dir`` with ``sink``. ``histograms`` is empty by
     default because distribution reduction is more expensive than scalar diagnostics; each
     configured histogram owns an independent snapshot cadence. Collection errors follow
-    ``error_policy``, and successful attachment returns ``None``.
+    ``error_policy``. By default, native PyTorch hooks observe normal ``module(...)`` dispatch.
+    Set ``capture_direct_forwards=True`` when model code invokes literal ``module.forward(...)``;
+    this replaces selected modules' instance-level ``forward`` attributes until
+    :func:`remove_observer` restores them. Successful attachment returns ``None``.
     """
     if hasattr(model, _OBSERVER_ATTRIBUTE):
         raise ObserverAlreadyAttachedError("model already has a TorchInstruments observer")
@@ -61,6 +66,7 @@ def inject_observer(
     resolved_selector = leaf_modules() if selector is _USE_DEFAULT else selector
     resolved_reducers = default_reducers() if reducers is _USE_DEFAULT else tuple(reducers)
     resolved_sink = _resolve_sink(output_dir, sink)
+    capture = ForwardCallCapture() if capture_direct_forwards else HookCallCapture()
 
     observer = Observer(
         model=model,
@@ -70,15 +76,17 @@ def inject_observer(
         histograms=tuple(histograms),
         sink=resolved_sink,
         error_policy=parse_error_policy(error_policy),
+        capture=capture,
     )
     observer.attach()
     setattr(model, _OBSERVER_ATTRIBUTE, observer)
 
 
 def remove_observer(model: nn.Module) -> None:
-    """Remove all TorchInstruments hooks and private state from ``model``.
+    """Remove all TorchInstruments capture behavior and private state from ``model``.
 
-    Calling this function for a model without an observer is a no-op.
+    Native hooks are detached and any observer-owned forward wrappers are restored. Calling this
+    function for a model without an observer is a no-op.
     """
     observer = getattr(model, _OBSERVER_ATTRIBUTE, _USE_DEFAULT)
     if not isinstance(observer, Observer):

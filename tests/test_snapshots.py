@@ -272,10 +272,11 @@ def test_run_and_snapshot_records_are_versioned(telemetry_dir: Path) -> None:
 
     run = read_run(telemetry_dir / "run.json")
     snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    assert run["schema_version"] == 2
+    assert run["schema_version"] == 3
     assert run["created_at"] == IsNow(iso_string=True, tz=UTC)
     assert run["sampling"] == {"settings": {}, "type": "always"}
     assert run["collection"] == {
+        "invocation_capture": "pytorch_hooks",
         "signals": ["module_outputs", "module_output_gradients"],
         "scalar_reducers": [
             {
@@ -288,7 +289,7 @@ def test_run_and_snapshot_records_are_versioned(telemetry_dir: Path) -> None:
         "histogram_reducers": [],
     }
     assert snapshot == IsPartialDict(
-        schema_version=2,
+        schema_version=3,
         snapshot_id=0,
         collection_duration_ms=IsNonNegative,
     )

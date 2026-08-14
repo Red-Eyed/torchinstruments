@@ -2,6 +2,28 @@
 
 All notable changes to TorchInstruments are documented here.
 
+## [0.4.0] - 2026-08-14
+
+### Highlights
+
+- Observe models that mix normal `module(...)` dispatch with literal `module.forward(...)` calls.
+
+### New Features
+
+- Add opt-in `capture_direct_forwards=True` capture for the root and recursively selected modules.
+- Record the active invocation-capture strategy in `run.json` and the generated `index.md`.
+
+### Compatibility
+
+- Keep native PyTorch hooks as the default and restore prior instance-level forward overrides when
+  direct-forward capture is removed.
+- Advance the telemetry schema to version 3 for invocation-capture metadata.
+
+### Developers
+
+- Add a root/leaf invocation matrix proving output, gradient, state, single-record, and cleanup
+  equivalence across `module(...)` and `module.forward(...)`.
+
 ## [0.3.0] - 2026-08-14
 
 ### Highlights

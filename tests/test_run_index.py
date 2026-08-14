@@ -20,6 +20,7 @@ def test_index_exists_before_the_first_sample(telemetry_dir: Path) -> None:
     assert "# TorchInstruments run index" in index
     assert "- Snapshots written: `0`" in index
     assert "- Latest snapshot ID: `not available yet`" in index
+    assert "- Invocation capture: `pytorch_hooks`" in index
     assert "- Configured signals: `module_outputs`, `module_output_gradients`" in index
     assert "`statistics` with settings" in index
     assert "- Histogram reducers: none configured" in index

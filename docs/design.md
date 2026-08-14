@@ -33,7 +33,8 @@ the user train normally with any trainer or custom loop.
 Training diagnostics are commonly coupled to a trainer, dashboard, or explicit calls inside the
 training loop. That makes them hard to reuse across custom trainers, Lightning, Accelerate, and
 research scripts. TorchInstruments instead observes module execution through local PyTorch hooks
-and persists compact, self-describing JSON suitable for human and LLM analysis.
+or explicit opt-in forward wrappers and persists compact, self-describing JSON suitable for human
+and LLM analysis.
 
 The package is trainer-agnostic, not framework-independent: PyTorch is its only core runtime
 dependency.
@@ -62,7 +63,7 @@ dependency.
 
 ```mermaid
 flowchart TD
-    H[PyTorch model hooks] --> O[Observer]
+    C[CallCapture: hooks or forward wrappers] --> O[Observer]
     SP[SamplingPolicy] --> O
     MS[ModuleSelector] --> O
     O --> P[Tensor-tree probe]
@@ -88,8 +89,8 @@ inject_observer(
 )
 ```
 
-`inject_observer()` mutates the model by attaching hooks and returns `None`. A second injection
-raises `ObserverAlreadyAttachedError`.
+`inject_observer()` mutates the model by attaching capture behavior and returns `None`. A second
+injection raises `ObserverAlreadyAttachedError`.
 
 ```python
 remove_observer(model)
@@ -117,6 +118,18 @@ inject_observer(
 
 Convenience arguments and their corresponding injected components are mutually exclusive.
 
+Native hooks capture normal PyTorch `module(...)` dispatch. Models that literally invoke
+`module.forward(...)` can select the more invasive wrapper strategy:
+
+```python
+inject_observer(model, capture_direct_forwards=True)
+```
+
+The wrapper strategy patches the root and every unique selected module once. It observes both
+normal dispatch and direct forward calls without double-counting, and removal restores the exact
+prior instance attribute when TorchInstruments still owns the wrapper. If application code
+replaces a wrapped forward later, removal leaves that newer replacement untouched.
+
 TensorBoard is adapted at the sink boundary without adding trainer dependencies to the core:
 
 ```python
@@ -136,13 +149,13 @@ The directory sink remains canonical and contains every value required to replay
 
 ## Snapshot lifecycle
 
-A sampling decision is made only at the root model's forward pre-hook. Every sampled root
-forward receives a unique snapshot ID and an independent context, so multiple forwards may be
-outstanding before a backward pass.
+A sampling decision is made only at the root model boundary. Every sampled root forward receives
+a unique snapshot ID and an independent context, so multiple forwards may be outstanding before a
+backward pass.
 
-Selected module hooks collect outputs only while that context is active. At the root forward
-post-hook, the sink writes a `forward_complete` snapshot immediately. This guarantees useful
-output for inference-only runs.
+Selected-module callbacks collect outputs only while that context is active. When the root
+boundary completes, the sink writes a `forward_complete` snapshot immediately. This guarantees
+useful output for inference-only runs.
 
 PyTorch's graph-local multi-gradient hook binds observed output gradients to tensors from that
 exact forward. When those gradients arrive, the same snapshot is atomically replaced with a
@@ -172,17 +185,17 @@ finite and non-finite counts, minimum, maximum, sum, and sum of squares. An unav
 is recorded in `unavailable_histograms` with its reason. This schema is the source of truth for
 both JSON analysis and TensorBoard rendering.
 
-Shared module objects have one hook and a canonical module name. All aliases appear in
+Shared module objects have one hook or wrapper and a canonical module name. All aliases appear in
 `modules.json`. Repeated calls to the same module within one root forward are represented as
 separate ordered calls rather than overwriting one another.
 
 ## Performance constraints
 
-Unsampled module hooks return after one context lookup. During sampled execution, reductions run
-on the tensor device and only compact scalar or histogram results cross to CPU. Built-in statistics
-operate on finite values in a safe floating dtype; `finite_fraction` reports how much of the
-original tensor was finite. Population standard deviation uses correction zero. Histograms are
-opt-in and own an independent every-N-snapshots cadence because binning is more expensive.
+Unsampled capture callbacks return after one context lookup. During sampled execution, reductions
+run on the tensor device and only compact scalar or histogram results cross to CPU. Built-in
+statistics operate on finite values in a safe floating dtype; `finite_fraction` reports how much
+of the original tensor was finite. Population standard deviation uses correction zero. Histograms
+are opt-in and own an independent every-N-snapshots cadence because binning is more expensive.
 
 `collection_duration_ms` measures observer reduction time. It deliberately excludes the model's
 own forward time and JSON write time. Accurate CUDA kernel duration requires device events and is
@@ -217,6 +230,14 @@ deduplication state. Use `CompositeSink` when both full records and live scalar 
 record, while `TensorBoardSink` derives `add_histogram_raw()` arguments from the same fields. This
 keeps TensorBoard reproducible from JSON and prevents dashboard integration from seeing raw model
 tensors.
+
+### Direct forward calls
+
+**Decision**: Keep native hooks as the default and provide an explicit forward-wrapper strategy.
+PyTorch intentionally bypasses module hooks for literal `module.forward(...)` calls, so recursive
+hook registration cannot observe that execution. Wrapping only the root and selected modules is
+the smallest mechanism that covers mixed normal and direct calls while preserving the same
+sampling, reduction, gradient-correlation, and sink lifecycle.
 
 ### License
 

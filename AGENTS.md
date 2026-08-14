@@ -18,7 +18,9 @@ Key terms:
   several calls because modules can be shared or reused.
 - **Sampling policy**: a callable object that decides whether a root forward starts a snapshot.
 - **Module selector**: a predicate evaluated during injection to choose which module objects get
-  collection hooks.
+  collection callbacks.
+- **Call capture**: the replaceable boundary that uses native hooks by default or reversible
+  forward wrappers when direct `.forward(...)` calls must be observed.
 - **Reducer**: a callable that detaches one tensor and returns named compact scalar diagnostics.
 - **Histogram reducer**: an opt-in callable with an independent snapshot cadence that emits a
   complete pre-aggregated distribution record.
@@ -58,19 +60,20 @@ format because it rewrites them. Only the user publishes package artifacts.
 ## Architecture
 
 `inject_observer()` resolves convenience arguments into replaceable components and constructs the
-imperative `Observer` shell. The observer selects modules once, initializes the sink, and registers
-hooks once. A context-local snapshot builder lets selected module hooks make one cheap context
-lookup on unsampled execution and isolates nested or concurrent root forwards.
+imperative `Observer` shell. The observer selects modules once, initializes the sink, and attaches
+one `CallCapture` strategy. A context-local snapshot builder lets selected-module callbacks make
+one cheap context lookup on unsampled execution and isolates nested or concurrent root forwards.
 
 During a sampled forward, tensor-tree traversal finds supported tensor leaves and reducers perform
-device-local reductions. Only compact scalar tensors are transferred to CPU. The root post-hook
-writes the forward snapshot and registers one graph-local multi-gradient hook. That hook binds
-output gradients to the exact forward context; a module-global backward hook cannot safely provide
-that correlation when several forwards are outstanding.
+device-local reductions. Only compact scalar tensors are transferred to CPU. The root capture
+boundary writes the forward snapshot and registers one graph-local multi-gradient hook. That hook
+binds output gradients to the exact forward context; a module-global backward hook cannot safely
+provide that correlation when several forwards are outstanding.
 
 Core abstractions are structural `Protocol` types:
 
 - `SamplingPolicy` in `sampling/base.py` decides at root-forward boundaries.
+- `CallCapture` in `capture.py` attaches native hooks or reversible forward wrappers.
 - `ModuleSelector` in `selectors/base.py` selects module objects during attachment.
 - `Reducer` in `reducers/base.py` produces named scalar reductions without inheritance.
 - `HistogramReducer` in `reducers/histograms.py` produces independently sampled distributions.
@@ -100,8 +103,9 @@ an `nn.Module`, parameter, or buffer, because injection must leave `state_dict()
   tensor. Standard deviation is population standard deviation with correction zero.
 - Histogram JSON must contain every bin, outlier count, and compact moment required to replay the
   TensorBoard event. A dashboard adapter must never recompute from or receive raw tensors.
-- Hooks must return without replacing module output or gradients. The `raise` error policy is the
-  only mode allowed to break a valid model execution.
+- Capture callbacks must return without replacing module output or gradients. Forward wrappers
+  must restore only attributes they still own. The `raise` error policy is the only mode allowed
+  to break a valid model execution.
 - Metric logger steps are telemetry snapshot IDs, never inferred optimizer steps. Externally
   supplied loggers remain caller-owned and must not be finalized by observer removal.
 - Tests use injected pytest fixtures for reusable resources and parametrization for repeated cases.
