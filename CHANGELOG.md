@@ -2,6 +2,29 @@
 
 All notable changes to TorchInstruments are documented here.
 
+## [0.2.0] - 2026-08-14
+
+### Highlights
+
+- Add optional scalar-logger output alongside canonical JSON for live research dashboards.
+
+### New Features
+
+- Add `MetricLoggerSink` for Lightning-compatible and custom `log_metrics()` implementations.
+- Add `CompositeSink` for lossless JSON and scalar logger fan-out from the same snapshots.
+
+### Documentation
+
+- Add a tested Lightning MNIST example with task accuracy, `TensorBoardLogger`, and structured
+  telemetry from a real dataset workflow.
+- Add research-diagnosis and LLM-analysis workflows that separate observations, hypotheses,
+  missing evidence, and next experiments.
+
+### Developers
+
+- Add Lightning, TensorBoard, and torchvision as development-only dependencies for real
+  integration coverage.
+
 ## [0.1.1] - 2026-08-14
 
 ### Documentation

@@ -21,6 +21,9 @@ Key terms:
   collection hooks.
 - **Reducer**: a callable that detaches one tensor and returns named compact scalar diagnostics.
 - **Sink**: the side-effect boundary that initializes run metadata and persists snapshots.
+- **Metric logger sink**: a lossy scalar projection that uses snapshot IDs as logger steps and
+  leaves ownership of the supplied logger with the caller.
+- **Composite sink**: an ordered fan-out that sends the same lifecycle records to multiple sinks.
 - **Absent**: a typed record carrying the reason a canonical value is unavailable; it replaces
   unexplained nulls in telemetry records.
 
@@ -39,7 +42,7 @@ uv run pytest tests/test_api.py       # Run one test module.
 uv run pytest tests/test_api.py::test_forward_output_is_bit_identical  # Run one test.
 uv run ruff check .                   # Lint all Python files.
 uv run ruff format .                  # Format all Python files in place.
-uv run pyrefly check src tests        # Type-check package code and tests.
+uv run pyrefly check src tests examples # Type-check package code, tests, and examples.
 uv build --wheel                      # Build the portable pure-Python wheel.
 uv version <version> --no-sync        # Update the package version through uv.
 ```
@@ -66,6 +69,8 @@ Core abstractions are structural `Protocol` types:
 - `ModuleSelector` in `selectors/base.py` selects module objects during attachment.
 - `Reducer` in `reducers/base.py` produces named scalar reductions without inheritance.
 - `Sink` in `sinks/base.py` owns persistence and can later be replaced by an asynchronous sink.
+- `MetricLoggerSink` projects only scalar statistics; `CompositeSink` preserves full JSON while
+  sending the same snapshots to dashboards.
 - Frozen dataclasses in `records.py` define the normalized schema before serialization.
 
 The observer is intentionally attached as a plain private Python attribute. Never register it as
@@ -89,6 +94,8 @@ an `nn.Module`, parameter, or buffer, because injection must leave `state_dict()
   tensor. Standard deviation is population standard deviation with correction zero.
 - Hooks must return without replacing module output or gradients. The `raise` error policy is the
   only mode allowed to break a valid model execution.
+- Metric logger steps are telemetry snapshot IDs, never inferred optimizer steps. Externally
+  supplied loggers remain caller-owned and must not be finalized by observer removal.
 - Tests use injected pytest fixtures for reusable resources and parametrization for repeated cases.
   Include regression coverage for shared modules and multiple outstanding forwards when changing
   lifecycle logic.

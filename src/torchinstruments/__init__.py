@@ -16,15 +16,24 @@ from torchinstruments.reducers import (
 )
 from torchinstruments.sampling import AlwaysSampler, EveryNForwardsSampler, TimedSampler
 from torchinstruments.selectors import leaf_modules
-from torchinstruments.sinks import DirectorySink, Sink
+from torchinstruments.sinks import (
+    CompositeSink,
+    DirectorySink,
+    MetricLogger,
+    MetricLoggerSink,
+    Sink,
+)
 
 __version__ = version("torchinstruments")
 
 __all__ = [
     "AlwaysSampler",
+    "CompositeSink",
     "DirectorySink",
     "ErrorPolicy",
     "EveryNForwardsSampler",
+    "MetricLogger",
+    "MetricLoggerSink",
     "ObserverAlreadyAttachedError",
     "Reducer",
     "Sink",

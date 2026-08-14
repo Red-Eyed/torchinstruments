@@ -109,6 +109,22 @@ inject_observer(
 
 Convenience arguments and their corresponding injected components are mutually exclusive.
 
+Scalar loggers are adapted at the sink boundary without adding trainer dependencies to the core:
+
+```python
+inject_observer(
+    model,
+    sink=CompositeSink(
+        DirectorySink("stats"),
+        MetricLoggerSink(logger),
+    ),
+)
+```
+
+`MetricLoggerSink` uses snapshot IDs as logger steps because root forwards cannot be mapped
+universally to optimizer steps. The adapter never finalizes an externally owned logger. The
+directory sink remains canonical because a scalar logger cannot preserve the full record schema.
+
 ## Snapshot lifecycle
 
 A sampling decision is made only at the root model's forward pre-hook. Every sampled root
@@ -172,6 +188,12 @@ single global collection flag is insufficient for multiple outstanding forwards.
 **Decision**: Write after forward, then atomically enrich after the first backward. Delaying all
 output until backward would lose inference-only telemetry.
 
+### Dashboard projection
+
+**Decision**: Emit output metrics on `forward_complete` and only newly available gradient metrics
+on `backward_observed`. This avoids duplicate tag/step pairs without retaining unbounded per-run
+deduplication state. Use `CompositeSink` when both full records and live scalar trends are needed.
+
 ### License
 
 **Decision**: Release TorchInstruments under the permissive MIT License.
@@ -194,7 +216,8 @@ happens before or after `torch.compile()`.
 ## Roadmap
 
 1. **Phase 1**: output and output-gradient statistics, time sampling, leaf selection, strict JSON.
-2. **Phase 2**: inputs, parameters, parameter gradients, selector/reducer combinators, summaries.
+2. **Phase 2**: inputs, parameters, parameter gradients, selector/reducer combinators, summaries,
+   and evidence-backed comparison records.
 3. **Phase 3**: layout-agnostic per-channel and quantization diagnostics.
 4. **Phase 4**: distributed execution, compilation tests, schema migrations, robustness.
 5. **Phase 5**: optional Transformer, attention, OCR, CNN, and quantization-readiness recipes.
