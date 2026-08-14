@@ -1,14 +1,11 @@
 # Research workflows
 
-TorchInstruments helps turn an underperforming model into testable hypotheses. It observes internal
-training signals; it does not infer task quality, inspect data, or know which architectural change
-will improve validation accuracy.
-
-The reliable research loop is:
+TorchInstruments turns internal model behavior into testable hypotheses. It does not know whether
+an architecture, dataset, loss, or optimizer is correct.
 
 ```text
 research question
-    → comparable telemetry
+    → comparable live indicators
     → observed signature
     → plausible causes
     → missing evidence
@@ -17,54 +14,56 @@ research question
 
 ## Start with a falsifiable question
 
-Prefer a specific question such as “Why did validation accuracy stop improving after the learning
-rate change?” over “What is wrong with the model?” Record the validation metric, checkpoint or
-training interval, and the exact model revision outside TorchInstruments. The observer does not
-collect those task-level facts automatically.
+Prefer “Why did validation accuracy stop improving after the normalization change?” over “What is
+wrong with the model?” Record the validation metric, model revision, seed, and intervention outside
+TorchInstruments; those facts cannot be inferred from module telemetry.
 
 ## Collect comparable runs
 
-Use the same selector, reducers, sampler, data slice, precision, and snapshot schedule for a
-baseline and a candidate. Change one research variable at a time. Separate output directories keep
-the evidence independent:
+Use the same selector, reducers, sampler, precision, data slice, and indicator configuration:
 
 ```python
 inject_observer(baseline, output_dir="stats/baseline")
 inject_observer(candidate, output_dir="stats/candidate")
 ```
 
-When two runs use different module names or sampling schedules, comparisons may still inspire a
-hypothesis, but they are not controlled evidence.
+Sampling IDs count sampled root forwards, not optimizer steps or epochs. Time-based sampling can
+observe different batches in different runs, so a fixed evaluation batch is preferable when the
+research question requires tightly aligned distributions.
 
 ## Translate signatures into experiments
 
-| Observed telemetry signature | Plausible causes | Evidence still missing | Useful next experiment |
+| Observed signature | Plausible causes | Missing evidence | Small next experiment |
 | --- | --- | --- | --- |
-| Gradient RMS drops sharply after one module | Saturation, detached path, poor residual scaling, excessive depth | Optimizer settings, input gradients, parameter gradients | Inspect the boundary module and test one normalization or residual-scaling change |
-| Gradient RMS grows rapidly with depth | Unstable initialization, amplification through residual paths, learning rate too high | Parameter scale, optimizer updates, loss-scale behavior | Lower the learning rate or change initialization while holding data fixed |
-| Activation RMS drifts across snapshots | Distribution shift, normalization mismatch, unstable residual accumulation | Batch composition, running statistics, input scale | Compare fixed evaluation batches and inspect normalization state |
-| `finite_fraction` first drops below `1.0` at one output | Overflow, invalid arithmetic, non-finite upstream input | Module inputs and operation-specific state | Reproduce with a sampled batch and instrument or inspect the preceding boundary |
-| `max_abs` is large relative to RMS | Rare outliers dominate dynamic range | Quantiles and per-channel ranges | Add targeted quantile/per-channel reducers when available or inspect that layer offline |
-| Telemetry is stable while accuracy remains poor | The bottleneck may be outside observed optimization dynamics | Labels, data quality, loss suitability, capacity, evaluation protocol | Audit task-level evidence instead of changing internal scale blindly |
+| Gradient RMS has negative momentum and a large drawdown after one module | Saturation, detached path, weak residual scaling, excessive depth | Inputs, `grad_input`, parameter gradients | Test one normalization or residual-scale change at that boundary |
+| Output RMS fast EMA exceeds slow EMA with a high-`R²` positive slope | Distribution shift, normalization mismatch, residual accumulation | Batch composition, module inputs, normalization state | Repeat on a fixed evaluation batch and inspect normalization |
+| RMS has low slope but high volatility and oscillation fraction | Alternating batch regimes, unstable normalization, feedback instability | Batch identity, task loss, running statistics | Compare odd/even samples or freeze normalization statistics |
+| CUSUM rises while lifetime mean remains ordinary | A recent regime change hidden by older observations | Learning-rate and schedule events | Align the change sample with external training events |
+| Skewness, kurtosis, and `p999_abs_to_rms` grow | Rare outliers or saturation dominate scale | Input distribution, per-channel statistics | Add fixed-bin histograms or per-channel reducers at that layer |
+| `finite_fraction` falls below `1.0` | Overflow, invalid arithmetic, non-finite upstream values | Inputs and operation-level tracing | Instrument the preceding boundary and rerun with anomaly detection |
+| No meaningful internal difference | Data, labels, loss, capacity, or evaluation may dominate | Task-level and data evidence | Redirect the experiment instead of tuning an arbitrary layer |
 
-These rows are hypothesis generators, not universal diagnoses. A signature can have several causes,
-and absence of a signature does not prove the model or data is correct.
+## Interpret indicators conservatively
 
-## Compare observations, not filenames
+- A large fast/slow EMA gap means recent behavior differs from longer-term behavior; it does not
+  explain why.
+- High momentum means persistent directional change over one configured horizon.
+- High volatility with low slope suggests instability rather than drift.
+- Lag-one autocorrelation near `1` indicates persistence; near `-1` indicates alternation.
+- CUSUM is a change score, not a calibrated probability.
+- `warmup_complete=false` means the configured history is not mature.
+- Several indicators derive from the same values and are correlated evidence, not independent
+  confirmations.
 
-Snapshot IDs count sampled root forwards. They are not optimizer steps, epochs, or dataset indices.
-Compare snapshots only when the sampling conditions make them meaningfully aligned. With a
-Lightning logger, TensorBoard uses the same snapshot IDs for telemetry series; Lightning's own
-optimizer-step metrics may use a different step domain.
+## Keep experiments controlled
 
-## Report conclusions with evidence levels
+Change one research variable at a time. Preserve seed, data order, precision, schedule, and
+evaluation. A useful report contains exact measurements and one small experiment, not a list of
+unrelated optimization advice.
 
-A useful research note separates four items:
+## Respect evidence boundaries
 
-1. **Observation** — a value directly present in telemetry.
-2. **Hypothesis** — a mechanism that could explain the observation and accuracy behavior.
-3. **Missing evidence** — data required to distinguish that hypothesis from alternatives.
-4. **Next experiment** — the smallest controlled change or measurement that could falsify it.
-
-This structure works for human review and for LLM-assisted analysis. See
-[LLM-assisted analysis](llm-analysis.md) for a bounded file set and prompt template.
+The current observer measures selected-module outputs and output gradients. It does not measure
+loss, labels, optimizer updates, inputs, parameters, or parameter gradients. A result such as
+“gradient scale falls after layer 7” is supported; “the optimizer made a bad update at layer 7” is
+not.

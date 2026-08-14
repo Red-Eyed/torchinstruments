@@ -37,7 +37,7 @@ class MnistRunConfig:
     epochs: int = 1
     batch_size: int = 64
     sample_every_n_forwards: int = 25
-    histogram_every_n_snapshots: int = 4
+    histogram_every_n_samples: int = 4
 
     def __post_init__(self) -> None:
         """Reject non-positive limits that would make the demonstration misleading."""
@@ -47,7 +47,7 @@ class MnistRunConfig:
             "epochs": self.epochs,
             "batch_size": self.batch_size,
             "sample_every_n_forwards": self.sample_every_n_forwards,
-            "histogram_every_n_snapshots": self.histogram_every_n_snapshots,
+            "histogram_every_n_samples": self.histogram_every_n_samples,
         }
         for name, value in limits.items():
             if value <= 0:
@@ -149,8 +149,8 @@ def run_training(
 ) -> Path:
     """Train with one logger shared by Lightning and TorchInstruments.
 
-    The returned path contains TensorBoard event files. Full structured snapshots, including the
-    data needed to reconstruct each histogram, remain in the configured telemetry directory.
+    The returned path contains TensorBoard event files. The same live scalar and histogram
+    evidence remains in ``config.telemetry_dir / "stats.json"``.
     """
     L.seed_everything(7, workers=True)
     model = MnistClassifier()
@@ -173,7 +173,7 @@ def run_training(
             histogram(
                 bins=64,
                 value_range=(-8.0, 8.0),
-                every_n_snapshots=config.histogram_every_n_snapshots,
+                every_n_samples=config.histogram_every_n_samples,
             ),
         ],
         sink=sink,

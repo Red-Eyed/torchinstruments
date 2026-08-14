@@ -11,7 +11,7 @@ import pytest
 import torch
 from torch import nn
 
-from tests.json_records import read_snapshot
+from tests.json_records import read_stats
 from torchinstruments import (
     AlwaysSampler,
     CompositeSink,
@@ -22,12 +22,12 @@ from torchinstruments import (
     inject_observer,
     remove_observer,
 )
-from torchinstruments.records import ModuleRecord, RunRecord, SnapshotRecord
+from torchinstruments.records import ModuleRecord, RunRecord, SampleRecord
 
 
 @dataclass(frozen=True)
 class _LogEvent:
-    """Capture one flat metric-logger call with its required snapshot step."""
+    """Capture one flat metric-logger call with its required sample step."""
 
     metrics: Mapping[str, float]
     step: int
@@ -117,15 +117,15 @@ class _RecordingTensorBoardLogger(_RecordingLogger):
 
 
 class _FailingWriteSink:
-    """Fail snapshot writes while honoring the rest of the sink lifecycle."""
+    """Fail sample deliveries while honoring the rest of the sink lifecycle."""
 
     def initialize(self, run: RunRecord, modules: Mapping[str, ModuleRecord]) -> None:
         """Accept initialization metadata without retaining it."""
         del run, modules
 
-    def write_snapshot(self, snapshot: SnapshotRecord) -> None:
+    def observe(self, sample: SampleRecord) -> None:
         """Raise a stable delivery failure for fan-out isolation coverage."""
-        del snapshot
+        del sample
         raise RuntimeError("logger destination unavailable")
 
     def close(self) -> None:
@@ -133,7 +133,7 @@ class _FailingWriteSink:
 
 
 def test_metric_logger_sink_projects_forward_and_backward_once() -> None:
-    """Use one snapshot step while keeping forward and gradient tags distinct."""
+    """Use one sample step while keeping forward and gradient tags distinct."""
     logger = _RecordingLogger()
     model = nn.Identity()
     inject_observer(
@@ -159,8 +159,8 @@ def test_metric_logger_sink_projects_forward_and_backward_once() -> None:
     assert "torchinstruments/modules/@root/call_0/output/rms" not in backward.metrics
 
 
-def test_composite_sink_preserves_json_and_logger_outputs(telemetry_dir: Path) -> None:
-    """Fan out one observer lifecycle to lossless JSON and flat scalar metrics."""
+def test_composite_sink_preserves_live_json_and_logger_outputs(telemetry_dir: Path) -> None:
+    """Fan out one observer lifecycle to live JSON and flat scalar metrics."""
     logger = _RecordingLogger()
     model = nn.Linear(4, 1)
     sink = CompositeSink(
@@ -172,8 +172,8 @@ def test_composite_sink_preserves_json_and_logger_outputs(telemetry_dir: Path) -
     model(torch.ones(2, 4)).sum().backward()
     remove_observer(model)
 
-    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    assert snapshot["state"] == "backward_observed"
+    stats = read_stats(telemetry_dir / "stats.json")
+    assert stats["backward_samples_observed"] == 1
     assert len(logger.events) == 2
     assert any(name.startswith("research/telemetry/") for name in logger.events[0].metrics)
 
@@ -193,8 +193,8 @@ def test_composite_sink_attempts_json_after_another_sink_fails(telemetry_dir: Pa
     model(torch.ones(1))
     remove_observer(model)
 
-    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    assert snapshot["state"] == "forward_complete"
+    stats = read_stats(telemetry_dir / "stats.json")
+    assert stats["samples_observed"] == 1
 
 
 def test_metric_logger_sink_requires_a_non_empty_prefix() -> None:
@@ -215,7 +215,7 @@ def test_tensorboard_histogram_is_derived_from_canonical_json(telemetry_dir: Pat
         model,
         sampler=AlwaysSampler(),
         histograms=[
-            histogram(bins=2, value_range=(-1.0, 1.0), every_n_snapshots=1),
+            histogram(bins=2, value_range=(-1.0, 1.0), every_n_samples=1),
         ],
         sink=sink,
         error_policy="raise",
@@ -224,8 +224,9 @@ def test_tensorboard_histogram_is_derived_from_canonical_json(telemetry_dir: Pat
     model(torch.tensor([-2.0, -1.0, 0.0, 1.0, 2.0]))
     remove_observer(model)
 
-    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    json_record = snapshot["modules"][""][0]["outputs"]["output"]["histograms"]["distribution"]
+    stats = read_stats(telemetry_dir / "stats.json")
+    output = stats["layers"][""][0]["outputs"]["output"]
+    json_record = output["histograms"]["distribution"]["latest"]
     event = logger.experiment.events[0]
     assert event.tag == "torchinstruments/modules/@root/call_0/output/histograms/distribution"
     assert event.minimum == json_record["minimum"]
@@ -238,8 +239,9 @@ def test_tensorboard_histogram_is_derived_from_canonical_json(telemetry_dir: Pat
         *(float(count) for count in json_record["bin_counts"]),
         float(json_record["overflow_count"]),
     )
-    assert event.step == snapshot["snapshot_id"]
+    rms_latest = output["statistics"]["rms"]["latest"]
+    assert event.step == rms_latest["sample_id"]
     assert (
         event.walltime
-        == datetime.fromisoformat(snapshot["timestamp"].replace("Z", "+00:00")).timestamp()
+        == datetime.fromisoformat(rms_latest["timestamp"].replace("Z", "+00:00")).timestamp()
     )

@@ -1,4 +1,4 @@
-# TorchInstruments: Passive PyTorch Model Telemetry
+# TorchInstruments: live PyTorch model telemetry
 
 **Author**: Vadym Stupakov <vadim.stupakov@gmail.com>
 
@@ -8,78 +8,51 @@
 
 **Authoritative URL**: https://github.com/Red-Eyed/torchinstruments
 
-## Table of contents
-
-- [Objective](#objective)
-- [Background](#background)
-- [Goals](#goals)
-- [Non-goals](#non-goals)
-- [Architecture](#architecture)
-- [Interfaces](#interfaces)
-- [Snapshot lifecycle](#snapshot-lifecycle)
-- [Output](#output)
-- [Performance constraints](#performance-constraints)
-- [Resolved issues](#resolved-issues)
-- [Open issues](#open-issues)
-- [Roadmap](#roadmap)
-
 ## Objective
 
-Provide useful model-training telemetry by instrumenting a PyTorch model once and then letting
-the user train normally with any trainer or custom loop.
-
-## Background
-
-Training diagnostics are commonly coupled to a trainer, dashboard, or explicit calls inside the
-training loop. That makes them hard to reuse across custom trainers, Lightning, Accelerate, and
-research scripts. TorchInstruments instead observes module execution through local PyTorch hooks
-or explicit opt-in forward wrappers and persists compact, self-describing JSON suitable for human
-and LLM analysis.
-
-The package is trainer-agnostic, not framework-independent: PyTorch is its only core runtime
-dependency.
+Instrument a PyTorch model once, train normally with any trainer or custom loop, and continuously
+maintain bounded per-layer evidence suitable for researchers, dashboards, and LLM analysis.
 
 ## Goals
 
-- Require one injection call and no training-loop callbacks.
+- Require no calls inside the training loop.
 - Add negligible work to unsampled forwards.
-- Never copy or persist full activations as telemetry.
-- Keep sampling, selection, reduction, records, and persistence independently replaceable.
+- Never persist raw tensors.
+- Describe distribution shape, tails, drift, volatility, oscillation, and regime changes.
+- Bound memory independently of training duration.
+- Persist one atomically updated, versioned JSON record.
+- Keep capture, sampling, selection, reduction, aggregation, and sinks replaceable.
 - Preserve model outputs, gradients, parameters, buffers, and checkpoint compatibility.
-- Produce deterministic, versioned JSON structures with descriptive field names.
 
 ## Non-goals
 
-- Observing optimizer updates in the generic observer. PyTorch module hooks cannot universally
-  identify optimizer-step boundaries.
-- Calling a root forward a training step. A trainer may perform several forwards per optimizer
-  step, or perform forwards without optimization.
-- Depending on TensorBoard, W&B, Lightning, or Accelerate in the core package. Optional adapters
-  may target their structural protocols without importing those frameworks.
-- Persisting raw tensors by default.
-- Claiming `torch.compile` compatibility before both injection orderings are tested.
+- Persisting every sampled observation or reconstructing a complete historical series.
+- Observing optimizer updates without an optimizer boundary.
+- Calling a sampled root forward a training step.
+- Depending on Lightning, TensorBoard, W&B, or Accelerate in the core wheel.
+- Claiming distributed, CUDA-performance, or `torch.compile` support before dedicated tests.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    C[CallCapture: hooks or forward wrappers] --> O[Observer]
+    C[CallCapture] --> O[Observer]
     SP[SamplingPolicy] --> O
     MS[ModuleSelector] --> O
     O --> P[Tensor-tree probe]
-    P --> R[Reducers]
-    R --> REC[Typed records]
-    REC --> S[Sink]
-    S --> J[Strict JSON files]
-    S --> TB[TensorBoard projection]
+    P --> R[Point-in-time reducers]
+    R --> E[Transient SampleRecord]
+    E --> A[LiveAggregator]
+    A --> L[LiveStatsRecord]
+    L --> D[DirectorySink: stats.json]
+    E --> TB[Optional dashboard sinks]
 ```
 
-The observer is an orchestration shell. Tensor traversal and reduction are functional core
-operations. The clock, selection policy, reducers, and sink are injected dependencies.
+The observer is an imperative orchestration shell. Tensor reduction and indicator calculations are
+independent components. The directory sink owns filesystem side effects; aggregation never reads
+or writes files.
 
-## Interfaces
-
-### Minimal API
+## Public workflow
 
 ```python
 inject_observer(
@@ -89,180 +62,162 @@ inject_observer(
 )
 ```
 
-`inject_observer()` mutates the model by attaching capture behavior and returns `None`. A second
-injection raises `ObserverAlreadyAttachedError`.
+`inject_observer()` mutates the model in place and returns `None`. A duplicate injection raises
+`ObserverAlreadyAttachedError`. `remove_observer(model)` detaches capture, removes graph-local
+gradient callbacks, restores observer-owned forward wrappers, closes sinks, and removes private
+observer state.
 
-```python
-remove_observer(model)
-has_observer(model)
-```
-
-### Configurable API
-
-```python
-inject_observer(
-    model,
-    sampler=AlwaysSampler(),
-    selector=leaf_modules(),
-    reducers=default_reducers(),
-    histograms=[
-        histogram(
-            bins=64,
-            value_range=(-8.0, 8.0),
-            every_n_snapshots=10,
-        ),
-    ],
-    sink=DirectorySink("stats"),
-)
-```
-
-Convenience arguments and their corresponding injected components are mutually exclusive.
-
-Native hooks capture normal PyTorch `module(...)` dispatch. Models that literally invoke
-`module.forward(...)` can select the more invasive wrapper strategy:
+Native hooks capture normal `module(...)` dispatch. Literal `.forward(...)` users select reversible
+wrappers:
 
 ```python
 inject_observer(model, capture_direct_forwards=True)
 ```
 
-The wrapper strategy patches the root and every unique selected module once. It observes both
-normal dispatch and direct forward calls without double-counting, and removal restores the exact
-prior instance attribute when TorchInstruments still owns the wrapper. If application code
-replaces a wrapped forward later, removal leaves that newer replacement untouched.
+## Sample lifecycle
 
-TensorBoard is adapted at the sink boundary without adding trainer dependencies to the core:
+A root capture boundary chooses sampling once. A sampled forward receives a unique sample ID and
+an independent context, so multiple forwards may remain outstanding before backward.
 
-```python
-inject_observer(
-    model,
-    sink=CompositeSink(
-        DirectorySink("stats"),
-        TensorBoardSink(logger),
-    ),
-)
-```
+Selected-module callbacks reduce outputs while the context is active. The observer emits a
+transient `forward_complete` `SampleRecord`. A graph-local multi-gradient hook binds output
+gradients to tensors from that exact forward. The first correlated backward emits a transient
+`backward_observed` event containing only newly relevant gradient measurements and errors.
 
-`TensorBoardSink` uses snapshot IDs as logger steps because root forwards cannot be mapped
-universally to optimizer steps. It projects scalars and pre-aggregated histograms from normalized
-records and never receives raw tensors. The adapter never finalizes an externally owned logger.
-The directory sink remains canonical and contains every value required to replay dashboard events.
+No sink is required to persist these events. `DirectorySink` folds them into live state;
+`MetricLoggerSink` and `TensorBoardSink` project them immediately.
 
-## Snapshot lifecycle
+## Point-in-time distribution profile
 
-A sampling decision is made only at the root model boundary. Every sampled root forward receives
-a unique snapshot ID and an independent context, so multiple forwards may be outstanding before a
-backward pass.
+The fused default reducer operates on finite values in a safe floating dtype and emits:
 
-Selected-module callbacks collect outputs only while that context is active. When the root
-boundary completes, the sink writes a `forward_complete` snapshot immediately. This guarantees
-useful output for inference-only runs.
+- mean, population standard deviation, RMS, extrema, mean absolute value, and L1/L2 norms;
+- finite, zero, positive, and negative fractions;
+- skewness and population excess kurtosis;
+- `p01`, `p05`, `p25`, median, `p75`, `p95`, `p99`, and `p999`;
+- `p99_abs`, `p999_abs`, IQR, and central 98% range;
+- max/RMS and absolute-quantile/RMS ratios;
+- tail fraction beyond three standard deviations;
+- normalized magnitude entropy and effective magnitude support.
 
-PyTorch's graph-local multi-gradient hook binds observed output gradients to tensors from that
-exact forward. When those gradients arrive, the same snapshot is atomically replaced with a
-`backward_observed` record. Only the first backward through a sampled graph is recorded in Phase
-1. Gradient accumulation across different root forwards remains correctly separated by snapshot.
+Unavailable scalars carry reasons rather than JSON null, NaN, or infinity. Quantiles and higher
+moments execute only on sampled forwards, but they are intentionally more expensive than the
+previous scale-only profile.
 
-## Output
+## Live temporal indicators
+
+`LiveAggregator` creates a bounded series for configured diagnostic metrics. Every series retains
+first/latest/minimum/maximum points, count, and warm-up state. Its default indicator bank includes:
+
+- population mean, standard deviation, RMS, and coefficient of variation over time;
+- fast/slow EMAs and relative gap;
+- absolute and relative momentum at 1, 5, and 20 observations;
+- online linear-regression slope and `R²`;
+- exponentially weighted change and volatility;
+- latest z-score against prior history;
+- drawdown, runup, and historical-range position;
+- directional up/down balance;
+- positive and negative CUSUM;
+- recent lag-one autocorrelation, oscillation fraction, and directional runs.
+
+Recent windows are bounded by configuration. Running moments, regression sums, EMAs, extrema, and
+CUSUM require constant state. Separate limits bound temporal series, tensor paths, module-call
+positions, histogram identities, and distinct instrumentation failures. Dropped series identities
+and rejected structural observations are counted rather than silently expanding memory.
+
+`latest_statistics` retains the complete current distribution profile. Rich temporal series are
+maintained only for configured `temporal_metrics`, preventing a Cartesian explosion between every
+point statistic and every technical indicator.
+
+## Histograms
+
+Histograms remain opt-in and have an independent every-N-samples cadence. Fixed edges are exactly
+mergeable by adding bin, underflow, overflow, finite, and non-finite counts plus moments. Dynamic
+edges retain the latest histogram but make the aggregate explicitly unavailable after edges
+change. Source tensors never reach sinks.
+
+## Canonical output
 
 ```text
 stats/
     index.md
-    run.json
-    modules.json
-    snapshots/
-        000000.json
-        000001.json
+    stats.json
 ```
 
-`index.md` is a bounded, atomically updated guide for humans and LLMs. It describes run progress,
-configured and observed telemetry, every artifact, evidence limits, and a ready-to-use prompt.
-Snapshot filenames contain only monotonic IDs. UTC timestamps are stored inside records. JSON
-serialization sorts object keys and rejects NaN and infinity. If a reducer cannot produce a finite
-scalar, the metric is omitted from `stats` and its reason is recorded in `unavailable_stats`.
+`stats.json` contains run metadata, module catalog, live forward and backward indicators, current
+metadata, histogram summaries, observer overhead, and bounded errors. The file is strict UTF-8
+JSON, sorted deterministically, and atomically replaced after durable temporary-file flushing.
 
-Opt-in histograms store regular bin edges and counts, explicit underflow and overflow counts,
-finite and non-finite counts, minimum, maximum, sum, and sum of squares. An unavailable histogram
-is recorded in `unavailable_histograms` with its reason. This schema is the source of truth for
-both JSON analysis and TensorBoard rendering.
+`index.md` is a derived, bounded guide with a ready-to-use LLM prompt. It contains no additional
+telemetry.
 
-Shared module objects have one hook or wrapper and a canonical module name. All aliases appear in
-`modules.json`. Repeated calls to the same module within one root forward are represented as
-separate ordered calls rather than overwriting one another.
+## TensorBoard and custom loggers
 
-## Performance constraints
+Dashboard sinks consume the transient `SampleRecord` before it is discarded. Sample IDs become
+dashboard steps because there is no universal optimizer-step counter. The supplied logger remains
+caller-owned.
 
-Unsampled capture callbacks return after one context lookup. During sampled execution, reductions
-run on the tensor device and only compact scalar or histogram results cross to CPU. Built-in
-statistics operate on finite values in a safe floating dtype; `finite_fraction` reports how much
-of the original tensor was finite. Population standard deviation uses correction zero. Histograms
-are opt-in and own an independent every-N-snapshots cadence because binning is more expensive.
+TensorBoard retains its own per-sample event history. The final `stats.json` intentionally retains
+bounded indicators rather than enough values to replay that complete history. Fixed histogram
+aggregates and current distributions remain available in JSON.
 
-`collection_duration_ms` measures observer reduction time. It deliberately excludes the model's
-own forward time and JSON write time. Accurate CUDA kernel duration requires device events and is
-deferred rather than hidden behind synchronizing wall-clock measurements.
+## Performance and scale
 
-## Resolved issues
+Unsampled module callbacks return after one context lookup. Sampled reductions run on the tensor
+device and transfer only compact scalars or histogram records. JSON size scales with selected
+module/call/tensor paths and configured temporal metrics, not training duration.
 
-### Sampling unit
+Atomic rewriting cost scales with the live file size. A future asynchronous sink can be added
+without changing capture, reducers, or aggregation.
 
-**Decision**: Sampling counts root model forwards. The step-based policy is named
-`EveryNForwardsSampler` because the observer receives no universal training-step signal.
+## Error isolation
+
+`raise`, `warn`, and `ignore` policies remain available; `warn` is the default. Non-raising errors
+are aggregated by module, probe, exception type, and message with first/latest timestamps and
+counts. The observer reports each lifecycle error once so forward errors are not double-counted
+when backward later arrives.
+
+## Resolved decisions
+
+### Live state instead of samples on disk
+
+**Decision**: Do not persist sampled-forward files. Maintain one live distribution and indicator
+record. This bounds storage by model structure and makes the primary artifact directly usable by
+an LLM.
+
+### Distribution shape
+
+**Decision**: Mean and standard deviation are insufficient for skewed, heavy-tailed, concentrated,
+or multimodal values. Include higher moments, quantiles, tail ratios, entropy, and optional
+histograms.
+
+### Temporal analysis
+
+**Decision**: Treat important per-layer metrics as bounded time series. Use descriptive indicator
+names instead of finance acronyms, expose warm-up, and avoid opaque composite health scores.
 
 ### Forward/backward correlation
 
-**Decision**: Each sampled forward owns its snapshot context and graph-local gradient hook. A
-single global collection flag is insufficient for multiple outstanding forwards.
-
-### Forward-only execution
-
-**Decision**: Write after forward, then atomically enrich after the first backward. Delaying all
-output until backward would lose inference-only telemetry.
-
-### Dashboard projection
-
-**Decision**: Emit output metrics on `forward_complete` and only newly available gradient metrics
-on `backward_observed`. This avoids duplicate tag/step pairs without retaining unbounded per-run
-deduplication state. Use `CompositeSink` when both full records and live scalar trends are needed.
-
-### Histogram source of truth
-
-**Decision**: Reduce each histogram once into a normalized record. `DirectorySink` serializes that
-record, while `TensorBoardSink` derives `add_histogram_raw()` arguments from the same fields. This
-keeps TensorBoard reproducible from JSON and prevents dashboard integration from seeing raw model
-tensors.
+**Decision**: Keep an independent context and graph-local hook per sampled forward. A single global
+collection flag cannot correlate multiple outstanding graphs.
 
 ### Direct forward calls
 
-**Decision**: Keep native hooks as the default and provide an explicit forward-wrapper strategy.
-PyTorch intentionally bypasses module hooks for literal `module.forward(...)` calls, so recursive
-hook registration cannot observe that execution. Wrapping only the root and selected modules is
-the smallest mechanism that covers mixed normal and direct calls while preserving the same
-sampling, reduction, gradient-correlation, and sink lifecycle.
-
-### License
-
-**Decision**: Release TorchInstruments under the permissive MIT License.
+**Decision**: Keep native hooks as the default. Direct `.forward(...)` calls bypass PyTorch hooks,
+so an explicit reversible wrapper strategy handles models that use them internally.
 
 ## Open issues
 
-### Compiled-model ordering
-
-**Problem**: Module hooks and graph capture interact differently depending on whether injection
-happens before or after `torch.compile()`.
-
-**Next step**: Test both orderings before documenting either as supported.
-
-### Distributed output policy
-
-**Problem**: Multiple ranks must not write the same files.
-
-**Proposed solution**: Add explicit `rank0` and `all` policies with rank-specific directories.
+- Module inputs, `grad_input`, parameters, and parameter gradients are not yet observed.
+- Cross-layer ranks and neighboring-layer amplification need a synchronized layer-level pass.
+- Multiple distributed ranks need explicit output ownership and directory policies.
+- Both `torch.compile` injection orderings require compatibility tests.
+- Very large selected module sets may benefit from asynchronous or sharded live sinks.
 
 ## Roadmap
 
-1. **Phase 1**: output and output-gradient statistics, time sampling, leaf selection, strict JSON.
-2. **Phase 2**: inputs, parameters, parameter gradients, selector/reducer combinators, summaries,
-   and evidence-backed comparison records.
-3. **Phase 3**: layout-agnostic per-channel and quantization diagnostics.
-4. **Phase 4**: distributed execution, compilation tests, schema migrations, robustness.
-5. **Phase 5**: optional Transformer, attention, OCR, CNN, and quantization-readiness recipes.
+1. Add input, `grad_input`, parameter, and parameter-gradient signals.
+2. Add cross-layer amplification, attenuation, and peer-rank indicators.
+3. Add layout-agnostic per-channel and quantization diagnostics.
+4. Add distributed output and compilation compatibility.
+5. Add optional Transformer, attention, OCR, CNN, and quantization-readiness recipes.

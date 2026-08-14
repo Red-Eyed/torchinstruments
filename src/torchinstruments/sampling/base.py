@@ -18,7 +18,7 @@ class SamplingEvent:
 
 
 class SamplingPolicy(Protocol):
-    """Decide whether a root forward should create a telemetry snapshot."""
+    """Decide whether a root forward should create a telemetry sample."""
 
     def should_sample(self, event: SamplingEvent) -> bool:
         """Return whether the supplied root-forward event should be sampled."""

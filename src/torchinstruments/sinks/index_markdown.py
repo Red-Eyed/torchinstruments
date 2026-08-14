@@ -1,203 +1,112 @@
-"""Bounded run-index rendering for human and LLM telemetry discovery."""
+"""Bounded human and LLM guidance for one live telemetry record."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
-from dataclasses import dataclass
 from datetime import UTC
 
-from torchinstruments.records import (
-    ModuleRecord,
-    ReducerRecord,
-    RunRecord,
-    SnapshotRecord,
-    TensorRecord,
-)
+from torchinstruments.records import LiveStatsRecord
 
 
-@dataclass(frozen=True)
-class ObservedTelemetry:
-    """Summarize record fields observed so far without retaining snapshot values."""
-
-    signals: frozenset[str] = frozenset()
-    scalar_statistics: frozenset[str] = frozenset()
-    histogram_names: frozenset[str] = frozenset()
-    unavailable_statistics: frozenset[str] = frozenset()
-    unavailable_histograms: frozenset[str] = frozenset()
-
-    def merged(self, other: ObservedTelemetry) -> ObservedTelemetry:
-        """Return the union of two immutable telemetry summaries."""
-        return ObservedTelemetry(
-            signals=self.signals | other.signals,
-            scalar_statistics=self.scalar_statistics | other.scalar_statistics,
-            histogram_names=self.histogram_names | other.histogram_names,
-            unavailable_statistics=self.unavailable_statistics | other.unavailable_statistics,
-            unavailable_histograms=self.unavailable_histograms | other.unavailable_histograms,
-        )
-
-
-def summarize_snapshot(snapshot: SnapshotRecord) -> ObservedTelemetry:
-    """Extract bounded field-name evidence from one normalized snapshot."""
-    signals: set[str] = set()
-    scalar_statistics: set[str] = set()
-    histogram_names: set[str] = set()
-    unavailable_statistics: set[str] = set()
-    unavailable_histograms: set[str] = set()
-
-    for calls in snapshot.modules.values():
-        for call in calls:
-            _observe_tensors(
-                call.outputs,
-                signal="module outputs",
-                signals=signals,
-                scalar_statistics=scalar_statistics,
-                histogram_names=histogram_names,
-                unavailable_statistics=unavailable_statistics,
-                unavailable_histograms=unavailable_histograms,
-            )
-            _observe_tensors(
-                call.output_gradients,
-                signal="module output gradients",
-                signals=signals,
-                scalar_statistics=scalar_statistics,
-                histogram_names=histogram_names,
-                unavailable_statistics=unavailable_statistics,
-                unavailable_histograms=unavailable_histograms,
-            )
-
-    return ObservedTelemetry(
-        signals=frozenset(signals),
-        scalar_statistics=frozenset(scalar_statistics),
-        histogram_names=frozenset(histogram_names),
-        unavailable_statistics=frozenset(unavailable_statistics),
-        unavailable_histograms=frozenset(unavailable_histograms),
-    )
-
-
-def render_run_index(
-    run: RunRecord,
-    modules: Mapping[str, ModuleRecord],
-    *,
-    snapshot_count: int,
-    observed: ObservedTelemetry,
-) -> str:
-    """Render a deterministic, bounded guide to one canonical telemetry directory."""
+def render_run_index(stats: LiveStatsRecord) -> str:
+    """Render a deterministic guide to the canonical live statistics file."""
+    run = stats.run
     sampling_settings = json.dumps(dict(run.sampling.settings), sort_keys=True)
     created_at = run.created_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    latest_snapshot = str(snapshot_count - 1) if snapshot_count else "not available yet"
+    statistic_names = _observed_statistic_names(stats)
+    indicator_names = _observed_indicator_names(stats)
     lines = [
-        "# TorchInstruments run index",
+        "# TorchInstruments live run index",
         "",
-        "> Start here. This guide is derived from the run records; JSON remains the canonical",
-        "> source of telemetry and contains everything projected to TensorBoard.",
+        "> Start here. `stats.json` is the single canonical telemetry record and is updated",
+        "> atomically after sampled forward and backward observations.",
         "",
         "## Run overview",
         "",
-        f"- Schema version: `{run.schema_version}`",
+        f"- Schema version: `{stats.schema_version}`",
         f"- TorchInstruments version: `{run.observer_version}`",
         f"- PyTorch version: `{run.torch_version}`",
         f"- Created at: `{created_at}`",
         f"- Sampling policy: `{run.sampling.type}` with settings `{sampling_settings}`",
         f"- Invocation capture: `{run.collection.invocation_capture}`",
-        f"- Configured signals: {_render_inline(run.collection.signals)}",
-        f"- Scalar reducers: {_render_reducers(run.collection.scalar_reducers)}",
-        f"- Histogram reducers: {_render_reducers(run.collection.histogram_reducers)}",
-        f"- Selected modules: `{len(modules)}`",
-        f"- Snapshots written: `{snapshot_count}`",
-        f"- Latest snapshot ID: `{latest_snapshot}`",
+        f"- Selected modules: `{len(stats.module_catalog)}`",
+        f"- Momentum horizons: `{list(stats.indicator_configuration.momentum_horizons)}`",
+        f"- Recent indicator window: `{stats.indicator_configuration.recent_window}` observations",
+        f"- Full warm-up floor: `{stats.indicator_configuration.warmup_observations}` observations",
+        f"- Sampled forwards observed: `{stats.samples_observed}`",
+        f"- Correlated backwards observed: `{stats.backward_samples_observed}`",
+        f"- Dropped metric series: `{stats.dropped_series}`",
+        f"- Dropped tensor-path observations: `{stats.dropped_tensor_path_observations}`",
+        f"- Dropped module-call observations: `{stats.dropped_module_call_observations}`",
+        f"- Dropped histogram observations: `{stats.dropped_histogram_observations}`",
+        f"- Dropped error summaries: `{stats.dropped_error_summaries}`",
         "",
         "## Files",
         "",
-        "- `index.md`: this bounded human and LLM entry point.",
-        "- `run.json`: immutable schema, versions, timestamp, sampling, and capture policy.",
-        "- `modules.json`: selected module names, aliases, types, and parameter counts.",
-        "- `snapshots/NNNNNN.json`: one sampled root forward, atomically enriched if its",
-        "  correlated backward is observed.",
+        "- `stats.json`: run metadata, module catalog, live per-layer indicators, histograms,",
+        "  observer overhead, and bounded error summaries.",
+        "- `index.md`: this derived guide; it contains no additional telemetry.",
         "",
-        "Snapshot IDs are telemetry IDs, not optimizer-step numbers. Module names and tensor",
-        "paths in JSON preserve the model structure seen by the observer.",
+        "No per-sample snapshot files are written. Extrema in `stats.json` retain the sample ID",
+        "and timestamp where they occurred.",
         "",
-        "## Telemetry observed so far",
+        "## Indicators observed so far",
         "",
-        _render_names("Signals", observed.signals),
-        _render_names("Scalar statistics", observed.scalar_statistics),
-        _render_names("Histogram records", observed.histogram_names),
-        _render_names("Unavailable scalar statistics", observed.unavailable_statistics),
-        _render_names("Unavailable histograms", observed.unavailable_histograms),
+        _render_names("Point-in-time tensor statistics", statistic_names),
+        _render_names("Temporal indicators", indicator_names),
         "",
-        "Each tensor record also includes `shape`, `dtype`, `device`, and `numel`. Histogram",
-        "records include bin edges and counts, underflow and overflow counts, finite and",
-        "non-finite counts, minimum, maximum, sum, and sum of squares. These fields are enough",
-        "to reproduce the corresponding TensorBoard histogram without the raw tensor.",
+        "Each tensor path separates forward `outputs` from backward `output_gradients`. Shared",
+        "modules retain distinct `call_index` entries. Every scalar series contains first, latest,",
+        "minimum, maximum, count, warm-up state, and bounded trend, momentum, volatility,",
+        "oscillation, autocorrelation, drawdown, runup, and CUSUM indicators.",
         "",
         "## Use this run with an LLM",
         "",
-        "For an LLM with filesystem access, point it at this directory and use:",
-        "",
         "```text",
-        "Read index.md, run.json, modules.json, and representative files under snapshots/.",
-        "Analyze the stated research question using only evidence present in those files.",
-        "For every finding, report: (1) observed fact with module, snapshot, field, and value;",
-        "(2) plausible hypothesis; (3) missing evidence; and (4) the smallest next experiment.",
-        "Distinguish measured evidence from inference and state when telemetry does not explain",
-        "the task-level result.",
+        "Read index.md and stats.json. Find layers whose forward distributions or backward",
+        "gradients show scale drift, heavy-tail growth, skew, non-finite values, high volatility,",
+        "persistent momentum, regime change, or collapse from a previous extreme.",
+        "For every finding report: (1) exact module, call index, tensor path, statistic, and",
+        "indicator values; (2) measured interpretation; (3) plausible mechanisms; (4) missing",
+        "evidence; and (5) the smallest controlled experiment. Treat indicators without completed",
+        "warm-up as weak evidence and distinguish measurements from hypotheses.",
         "```",
-        "",
-        "For an upload-based LLM, attach this file, `run.json`, `modules.json`, the task-level",
-        "result, and a bounded set of snapshots. Start with early, middle, and late snapshots",
-        "plus snapshots near a known loss or accuracy change; do not upload thousands blindly.",
         "",
         "## Evidence limits",
         "",
-        "TorchInstruments currently observes selected-module outputs and their correlated output",
-        "gradients. It does not observe loss values, labels, optimizer updates, module inputs,",
-        "parameters, or parameter gradients unless those are supplied separately. Scale or",
-        "distribution anomalies support hypotheses; they do not prove why accuracy changed.",
+        "TorchInstruments observes selected-module outputs and their correlated output gradients.",
+        "It does not observe loss, labels, optimizer updates, module inputs, parameters, or",
+        "parameter gradients unless those signals are added separately. Online indicators retain",
+        "bounded distribution and temporal evidence, not the complete historical time series.",
         "",
     ]
     return "\n".join(lines)
 
 
-def _observe_tensors(
-    tensors: Mapping[str, TensorRecord],
-    *,
-    signal: str,
-    signals: set[str],
-    scalar_statistics: set[str],
-    histogram_names: set[str],
-    unavailable_statistics: set[str],
-    unavailable_histograms: set[str],
-) -> None:
-    """Accumulate names from one signal mapping while keeping rendering state bounded."""
-    if not tensors:
-        return
-
-    signals.add(signal)
-    for value in tensors.values():
-        scalar_statistics.update(value.stats)
-        histogram_names.update(value.histograms)
-        unavailable_statistics.update(value.unavailable_stats)
-        unavailable_histograms.update(value.unavailable_histograms)
+def _observed_statistic_names(stats: LiveStatsRecord) -> frozenset[str]:
+    """Collect scalar statistic names without retaining any measurement values."""
+    names: set[str] = set()
+    for calls in stats.layers.values():
+        for call in calls:
+            for tensors in (call.outputs, call.output_gradients):
+                for tensor in tensors.values():
+                    names.update(tensor.statistics)
+    return frozenset(names)
 
 
-def _render_names(label: str, values: frozenset[str]) -> str:
-    """Render one stable inline set without allowing the index to grow per snapshot."""
-    rendered = ", ".join(f"`{value}`" for value in sorted(values))
-    return f"- {label}: {rendered or 'none observed yet'}"
+def _observed_indicator_names(stats: LiveStatsRecord) -> frozenset[str]:
+    """Collect temporal indicator names from the first available scalar series."""
+    for calls in stats.layers.values():
+        for call in calls:
+            for tensors in (call.outputs, call.output_gradients):
+                for tensor in tensors.values():
+                    for series in tensor.statistics.values():
+                        return frozenset(series.indicators)
+    return frozenset()
 
 
-def _render_reducers(reducers: tuple[ReducerRecord, ...]) -> str:
-    """Render complete configured reducer metadata without relying on defaults."""
-    if not reducers:
-        return "none configured"
-    rendered: list[str] = []
-    for value in reducers:
-        settings = json.dumps(dict(value.settings), sort_keys=True)
-        rendered.append(f"`{value.type}` with settings `{settings}`")
-    return "; ".join(rendered)
-
-
-def _render_inline(values: tuple[str, ...]) -> str:
-    """Render one configured tuple as stable inline code values."""
-    return ", ".join(f"`{value}`" for value in values) or "none configured"
+def _render_names(label: str, names: frozenset[str]) -> str:
+    """Render a sorted bounded name list or an explicit empty state."""
+    if not names:
+        return f"- {label}: none observed yet"
+    return f"- {label}: " + ", ".join(f"`{name}`" for name in sorted(names))

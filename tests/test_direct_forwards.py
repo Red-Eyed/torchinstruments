@@ -10,7 +10,7 @@ import pytest
 import torch
 from torch import nn
 
-from tests.json_records import read_run, read_snapshot
+from tests.json_records import read_stats
 from torchinstruments import AlwaysSampler, inject_observer, remove_observer
 
 
@@ -71,10 +71,9 @@ def test_forward_capture_supports_call_and_forward_exactly_once(
         torch.equal(state_before[name], value) for name, value in observed.state_dict().items()
     )
 
-    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    run = read_run(telemetry_dir / "run.json")
-    assert run["collection"]["invocation_capture"] == "forward_wrappers"
-    calls = snapshot["modules"]["linear"]
+    stats = read_stats(telemetry_dir / "stats.json")
+    assert stats["run"]["collection"]["invocation_capture"] == "forward_wrappers"
+    calls = stats["layers"]["linear"]
     assert len(calls) == 1
     assert calls[0]["call_index"] == 0
     assert calls[0]["outputs"]["output"]["shape"] == [2, 3]

@@ -6,26 +6,28 @@ This file provides guidance to Codex when working with code in this repository.
 
 TorchInstruments passively collects compact telemetry from arbitrary PyTorch models. A user
 injects an observer once, runs an otherwise unchanged training or inference loop, and receives
-versioned JSON snapshots without trainer-specific integration.
+one atomically updated live JSON record without trainer-specific integration.
 
 Key terms:
 
 - **Root forward**: one invocation of the model passed to `inject_observer()`. It is the sampling
   unit; it is deliberately not called a training step.
-- **Snapshot**: all measurements correlated with one sampled root forward. It is written first as
-  `forward_complete` and atomically enriched to `backward_observed` if gradients arrive.
-- **Module call**: one invocation of a selected module inside a snapshot. One module may have
+- **Sample event**: a transient forward or backward record delivered to sinks and then discarded.
+- **Live statistics**: bounded per-layer distributions and temporal indicators accumulated across
+  sample events in `stats.json`.
+- **Module call**: one invocation position of a selected module. One module may have
   several calls because modules can be shared or reused.
-- **Sampling policy**: a callable object that decides whether a root forward starts a snapshot.
+- **Sampling policy**: a callable object that decides whether a root forward is sampled.
 - **Module selector**: a predicate evaluated during injection to choose which module objects get
   collection callbacks.
 - **Call capture**: the replaceable boundary that uses native hooks by default or reversible
   forward wrappers when direct `.forward(...)` calls must be observed.
 - **Reducer**: a callable that detaches one tensor and returns named compact scalar diagnostics.
-- **Histogram reducer**: an opt-in callable with an independent snapshot cadence that emits a
+- **Histogram reducer**: an opt-in callable with an independent sample cadence that emits a
   complete pre-aggregated distribution record.
-- **Sink**: the side-effect boundary that initializes run metadata and persists snapshots.
-- **Metric logger sink**: a lossy scalar projection that uses snapshot IDs as logger steps and
+- **Aggregator**: bounded state that derives live temporal indicators from transient samples.
+- **Sink**: the boundary that consumes sample events and owns any side effects.
+- **Metric logger sink**: a lossy scalar projection that uses sample IDs as logger steps and
   leaves ownership of the supplied logger with the caller.
 - **TensorBoard sink**: a scalar and histogram projection derived from normalized records; it
   never receives source tensors and never owns the supplied logger.
@@ -33,10 +35,10 @@ Key terms:
 - **Absent**: a typed record carrying the reason a canonical value is unavailable; it replaces
   unexplained nulls in telemetry records.
 
-The canonical telemetry artifact is strict UTF-8 JSON. A run directory also contains a derived,
-bounded `index.md` for human and LLM discovery, plus `run.json`, `modules.json`, and monotonically
-numbered files under `snapshots/`. Snapshot and index rewrites use atomic filesystem replacement;
-JSON rejects NaN or infinity during serialization.
+The canonical telemetry artifact is strict UTF-8 `stats.json`. A run directory also contains a
+derived, bounded `index.md` for human and LLM discovery. The live JSON and index use atomic
+filesystem replacement; JSON rejects NaN or infinity during serialization. No sampled-forward
+files are persisted.
 
 ## Development Commands
 
@@ -61,12 +63,12 @@ format because it rewrites them. Only the user publishes package artifacts.
 
 `inject_observer()` resolves convenience arguments into replaceable components and constructs the
 imperative `Observer` shell. The observer selects modules once, initializes the sink, and attaches
-one `CallCapture` strategy. A context-local snapshot builder lets selected-module callbacks make
+one `CallCapture` strategy. A context-local sample builder lets selected-module callbacks make
 one cheap context lookup on unsampled execution and isolates nested or concurrent root forwards.
 
 During a sampled forward, tensor-tree traversal finds supported tensor leaves and reducers perform
 device-local reductions. Only compact scalar tensors are transferred to CPU. The root capture
-boundary writes the forward snapshot and registers one graph-local multi-gradient hook. That hook
+boundary emits forward measurements and registers one graph-local multi-gradient hook. That hook
 binds output gradients to the exact forward context; a module-global backward hook cannot safely
 provide that correlation when several forwards are outstanding.
 
@@ -74,13 +76,15 @@ Core abstractions are structural `Protocol` types:
 
 - `SamplingPolicy` in `sampling/base.py` decides at root-forward boundaries.
 - `CallCapture` in `capture.py` attaches native hooks or reversible forward wrappers.
+- `Aggregator` in `aggregation/base.py` folds transient events into bounded live records.
+- `LiveAggregator` in `aggregation/live.py` calculates distribution and temporal indicators.
 - `ModuleSelector` in `selectors/base.py` selects module objects during attachment.
 - `Reducer` in `reducers/base.py` produces named scalar reductions without inheritance.
 - `HistogramReducer` in `reducers/histograms.py` produces independently sampled distributions.
-- `Sink` in `sinks/base.py` owns persistence and can later be replaced by an asynchronous sink.
+- `Sink` in `sinks/base.py` consumes transient events and can be replaced independently.
 - `MetricLoggerSink` projects only scalar statistics; `TensorBoardSink` derives scalars and
   histograms from the same records that `DirectorySink` serializes.
-- Frozen dataclasses in `records.py` define the normalized schema before serialization.
+- Frozen dataclasses in `records.py` define transient and live schemas before serialization.
 
 The observer is intentionally attached as a plain private Python attribute. Never register it as
 an `nn.Module`, parameter, or buffer, because injection must leave `state_dict()` unchanged.
@@ -100,13 +104,15 @@ an `nn.Module`, parameter, or buffer, because injection must leave `state_dict()
 - Preserve unexplained absence as an `Absent` value or an `unavailable_stats` reason. Do not emit
   bare JSON nulls or non-standard NaN/Infinity tokens.
 - Built-in statistics operate on finite values and report `finite_fraction` against the original
-  tensor. Standard deviation is population standard deviation with correction zero.
+  tensor. Standard deviation, skewness, and kurtosis use population moments.
+- Temporal windows, metric series, tensor paths, call positions, histogram identities, and error
+  identities must remain explicitly bounded.
 - Histogram JSON must contain every bin, outlier count, and compact moment required to replay the
   TensorBoard event. A dashboard adapter must never recompute from or receive raw tensors.
 - Capture callbacks must return without replacing module output or gradients. Forward wrappers
   must restore only attributes they still own. The `raise` error policy is the only mode allowed
   to break a valid model execution.
-- Metric logger steps are telemetry snapshot IDs, never inferred optimizer steps. Externally
+- Metric logger steps are telemetry sample IDs, never inferred optimizer steps. Externally
   supplied loggers remain caller-owned and must not be finalized by observer removal.
 - Tests use injected pytest fixtures for reusable resources and parametrization for repeated cases.
   Include regression coverage for shared modules and multiple outstanding forwards when changing

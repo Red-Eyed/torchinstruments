@@ -1,11 +1,11 @@
-"""Structural persistence contract for run metadata and snapshots."""
+"""Structural contract for live telemetry destinations."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Protocol
 
-from torchinstruments.records import ModuleRecord, RunRecord, SnapshotRecord
+from torchinstruments.records import ModuleRecord, RunRecord, SampleRecord
 
 
 class Sink(Protocol):
@@ -15,8 +15,8 @@ class Sink(Protocol):
         """Initialize one run and persist its immutable module catalog."""
         ...
 
-    def write_snapshot(self, snapshot: SnapshotRecord) -> None:
-        """Persist or atomically enrich one identified snapshot."""
+    def observe(self, sample: SampleRecord) -> None:
+        """Consume one transient forward or backward sample event."""
         ...
 
     def close(self) -> None:

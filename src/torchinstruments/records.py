@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TypeAlias
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,7 @@ class CollectionRecord:
 
 @dataclass(frozen=True)
 class RunRecord:
-    """Store immutable metadata shared by every snapshot in one observer run."""
+    """Store immutable metadata shared by every sample in one observer run."""
 
     schema_version: int
     created_at: datetime
@@ -125,22 +125,135 @@ class ErrorRecord:
     message: str
 
 
-class SnapshotState(StrEnum):
-    """Identify whether a snapshot contains only forward data or also gradients."""
+class SampleState(StrEnum):
+    """Identify whether a transient sample contains forward data or new gradients."""
 
     FORWARD_COMPLETE = "forward_complete"
     BACKWARD_OBSERVED = "backward_observed"
 
 
 @dataclass(frozen=True)
-class SnapshotRecord:
-    """Represent all compact telemetry correlated with one sampled root forward."""
+class SampleRecord:
+    """Carry one transient sampled-forward lifecycle event to configured sinks."""
 
     schema_version: int
-    snapshot_id: int
+    sample_id: int
     forward_index: int
     timestamp: datetime
-    state: SnapshotState
+    state: SampleState
     collection_duration_ms: float
     modules: Mapping[str, tuple[ModuleCallRecord, ...]]
     errors: tuple[ErrorRecord, ...]
+
+
+@dataclass(frozen=True)
+class MetricPointRecord:
+    """Locate one scalar observation in sampled-forward time."""
+
+    value: float
+    sample_id: int
+    timestamp: datetime
+
+
+IndicatorValue: TypeAlias = float | int
+
+
+@dataclass(frozen=True)
+class SeriesSummaryRecord:
+    """Describe one bounded live scalar series and its derived indicators."""
+
+    count: int
+    warmup_complete: bool
+    first: MetricPointRecord
+    latest: MetricPointRecord
+    minimum: MetricPointRecord
+    maximum: MetricPointRecord
+    indicators: Mapping[str, IndicatorValue]
+
+
+@dataclass(frozen=True)
+class HistogramSummaryRecord:
+    """Retain the latest histogram and an exact merge when bin edges remain stable."""
+
+    samples: int
+    latest: HistogramRecord
+    aggregate: HistogramRecord | Absent
+
+
+@dataclass(frozen=True)
+class LiveTensorRecord:
+    """Describe current tensor metadata and bounded indicators for one tensor path."""
+
+    observations: int
+    shape: tuple[int, ...]
+    shape_changes: int
+    dtype: str
+    device: str
+    numel: int
+    latest_statistics: Mapping[str, float]
+    statistics: Mapping[str, SeriesSummaryRecord]
+    histograms: Mapping[str, HistogramSummaryRecord]
+    latest_unavailable_statistics: Mapping[str, str]
+    latest_unavailable_histograms: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class LiveModuleCallRecord:
+    """Keep live forward and backward summaries separate for one module call position."""
+
+    call_index: int
+    outputs: Mapping[str, LiveTensorRecord]
+    output_gradients: Mapping[str, LiveTensorRecord]
+
+
+@dataclass(frozen=True)
+class ErrorSummaryRecord:
+    """Aggregate repeated instrumentation failures without an unbounded event log."""
+
+    count: int
+    first_timestamp: datetime
+    latest_timestamp: datetime
+    module: str | Absent
+    probe: str
+    exception_type: str
+    message: str
+
+
+@dataclass(frozen=True)
+class IndicatorConfigurationRecord:
+    """Describe the exact bounded temporal-analysis configuration for one run."""
+
+    fast_ema_alpha: float
+    slow_ema_alpha: float
+    change_volatility_alpha: float
+    momentum_horizons: tuple[int, ...]
+    recent_window: int
+    cusum_allowance: float
+    warmup_observations: int
+    max_series: int
+    max_tensor_paths: int
+    max_module_calls: int
+    max_histograms: int
+    max_error_summaries: int
+    temporal_metrics: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LiveStatsRecord:
+    """Represent the complete canonical live telemetry file for one observer run."""
+
+    schema_version: int
+    updated_at: datetime
+    run: RunRecord
+    module_catalog: Mapping[str, ModuleRecord]
+    indicator_configuration: IndicatorConfigurationRecord
+    samples_observed: int
+    backward_samples_observed: int
+    observer_statistics: Mapping[str, SeriesSummaryRecord]
+    layers: Mapping[str, tuple[LiveModuleCallRecord, ...]]
+    errors: tuple[ErrorSummaryRecord, ...]
+    dropped_series: int
+    dropped_tensor_path_observations: int
+    dropped_module_call_observations: int
+    dropped_histogram_observations: int
+    dropped_error_summaries: int

@@ -9,7 +9,7 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 from torch.utils.data import DataLoader, TensorDataset
 
 from examples.lightning_mnist import MnistRunConfig, run_training
-from tests.json_records import read_snapshot
+from tests.json_records import read_stats
 
 
 def test_lightning_example_writes_json_and_tensorboard(tmp_path: Path) -> None:
@@ -23,21 +23,16 @@ def test_lightning_example_writes_json_and_tensorboard(tmp_path: Path) -> None:
         validation_batches=1,
         batch_size=16,
         sample_every_n_forwards=1,
-        histogram_every_n_snapshots=1,
+        histogram_every_n_samples=1,
     )
     train_loader = _mnist_shaped_loader(samples=48)
     validation_loader = _mnist_shaped_loader(samples=16)
 
     tensorboard_dir = run_training(config, train_loader, validation_loader)
 
-    snapshot_paths = sorted((telemetry_dir / "snapshots").glob("*.json"))
-    assert len(snapshot_paths) == 4
-    assert [read_snapshot(path)["state"] for path in snapshot_paths] == [
-        "backward_observed",
-        "backward_observed",
-        "backward_observed",
-        "forward_complete",
-    ]
+    stats = read_stats(telemetry_dir / "stats.json")
+    assert stats["samples_observed"] == 4
+    assert stats["backward_samples_observed"] == 3
 
     events = EventAccumulator(
         str(tensorboard_dir),
@@ -59,11 +54,10 @@ def test_lightning_example_writes_json_and_tensorboard(tmp_path: Path) -> None:
     assert [event.step for event in events.Histograms(output_distribution)] == [0, 1, 2, 3]
     assert [event.step for event in events.Histograms(gradient_distribution)] == [0, 1, 2]
 
-    first_snapshot = read_snapshot(snapshot_paths[0])
-    json_histogram = first_snapshot["modules"]["0"][0]["outputs"]["output"]["histograms"][
-        "distribution"
+    json_histogram = stats["layers"]["0"][0]["outputs"]["output"]["histograms"]["distribution"][
+        "latest"
     ]
-    tensorboard_histogram = events.Histograms(output_distribution)[0].histogram_value
+    tensorboard_histogram = events.Histograms(output_distribution)[-1].histogram_value
     assert tensorboard_histogram.num == json_histogram["finite_count"]
     assert tensorboard_histogram.sum == json_histogram["sum"]
     assert tensorboard_histogram.sum_squares == json_histogram["sum_squares"]

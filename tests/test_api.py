@@ -10,7 +10,7 @@ import pytest
 import torch
 from torch import nn
 
-from tests.json_records import read_snapshot
+from tests.json_records import read_stats
 from torchinstruments import (
     AlwaysSampler,
     ObserverAlreadyAttachedError,
@@ -98,7 +98,7 @@ def test_remove_observer_stops_future_collection(
     linear_model: nn.Linear,
     telemetry_dir: Path,
 ) -> None:
-    """Stop collecting new snapshots after explicit observer removal."""
+    """Stop updating live statistics after explicit observer removal."""
     inject_observer(linear_model, sampler=AlwaysSampler(), output_dir=telemetry_dir)
     linear_model(torch.randn(1, 4))
     remove_observer(linear_model)
@@ -106,7 +106,8 @@ def test_remove_observer_stops_future_collection(
     linear_model(torch.randn(1, 4))
 
     assert not has_observer(linear_model)
-    assert [path.name for path in (telemetry_dir / "snapshots").iterdir()] == ["000000.json"]
+    stats = read_stats(telemetry_dir / "stats.json")
+    assert stats["samples_observed"] == 1
 
 
 def test_remove_observer_detaches_pending_gradient_hooks(
@@ -120,8 +121,9 @@ def test_remove_observer_detaches_pending_gradient_hooks(
 
     output.sum().backward()
 
-    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    assert snapshot["state"] == "forward_complete"
+    stats = read_stats(telemetry_dir / "stats.json")
+    assert stats["samples_observed"] == 1
+    assert stats["backward_samples_observed"] == 0
 
 
 def test_remove_observer_is_idempotent(linear_model: nn.Linear) -> None:
@@ -166,20 +168,22 @@ def test_inactive_hooks_do_not_call_reducers(
         linear_model(torch.randn(1, 4))
 
     assert calls == 0
-    assert not any((telemetry_dir / "snapshots").iterdir())
+    stats = read_stats(telemetry_dir / "stats.json")
+    assert stats["samples_observed"] == 0
     remove_observer(linear_model)
 
 
-def test_forward_only_execution_writes_complete_forward_snapshot(
+def test_forward_only_execution_updates_live_forward_statistics(
     linear_model: nn.Linear,
     telemetry_dir: Path,
 ) -> None:
-    """Persist forward telemetry even when no backward pass follows."""
+    """Persist live forward telemetry even when no backward pass follows."""
     inject_observer(linear_model, sampler=AlwaysSampler(), output_dir=telemetry_dir)
 
     linear_model(torch.randn(2, 4))
 
-    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    assert snapshot["state"] == "forward_complete"
-    assert snapshot["modules"][""][0]["outputs"]["output"]["shape"] == [2, 3]
+    stats = read_stats(telemetry_dir / "stats.json")
+    assert stats["samples_observed"] == 1
+    assert stats["backward_samples_observed"] == 0
+    assert stats["layers"][""][0]["outputs"]["output"]["shape"] == [2, 3]
     remove_observer(linear_model)

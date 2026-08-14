@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
-from torchinstruments.records import ModuleRecord, RunRecord, SnapshotRecord
+from torchinstruments.records import ModuleRecord, RunRecord, SampleRecord
 from torchinstruments.sinks.base import Sink
 
 
 class CompositeSink:
     """Forward each lifecycle event to every configured sink.
 
-    Snapshot writes and closes are attempted for every sink before collected failures are raised
+    Sample deliveries and closes are attempted for every sink before collected failures are raised
     as an ``ExceptionGroup``. Initialization stops at the first failure and closes sinks that were
     already initialized.
     """
@@ -38,15 +38,15 @@ class CompositeSink:
                 ) from initialize_error
             raise
 
-    def write_snapshot(self, snapshot: SnapshotRecord) -> None:
-        """Deliver a snapshot to every sink and report all delivery failures together."""
+    def observe(self, sample: SampleRecord) -> None:
+        """Deliver a transient sample to every sink and report all failures together."""
         errors: list[Exception] = []
         for sink in self._sinks:
             try:
-                sink.write_snapshot(snapshot)
+                sink.observe(sample)
             except Exception as error:
                 errors.append(error)
-        _raise_errors("snapshot delivery", errors)
+        _raise_errors("sample delivery", errors)
 
     def close(self) -> None:
         """Close every sink in reverse initialization order."""

@@ -53,7 +53,7 @@ def inject_observer(
     Convenience arguments are mutually exclusive with their corresponding injected component:
     ``interval`` with ``sampler``, and ``output_dir`` with ``sink``. ``histograms`` is empty by
     default because distribution reduction is more expensive than scalar diagnostics; each
-    configured histogram owns an independent snapshot cadence. Collection errors follow
+    configured histogram owns an independent sample cadence. Collection errors follow
     ``error_policy``. By default, native PyTorch hooks observe normal ``module(...)`` dispatch.
     Set ``capture_direct_forwards=True`` when model code invokes literal ``module.forward(...)``;
     this replaces selected modules' instance-level ``forward`` attributes until

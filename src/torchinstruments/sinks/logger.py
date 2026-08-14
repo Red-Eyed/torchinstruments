@@ -1,4 +1,4 @@
-"""Project hierarchical snapshots onto flat scalar metric loggers."""
+"""Project transient sampled-forward events onto flat scalar metric loggers."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from typing import Protocol
 from torchinstruments.records import (
     ModuleRecord,
     RunRecord,
-    SnapshotRecord,
-    SnapshotState,
+    SampleRecord,
+    SampleState,
     TensorRecord,
 )
 from torchinstruments.sinks.paths import path_segment, tensor_path_prefix
@@ -24,9 +24,9 @@ class MetricLogger(Protocol):
 
 
 class MetricLoggerSink:
-    """Send snapshot statistics to a Lightning-compatible metric logger.
+    """Send sampled statistics to a Lightning-compatible metric logger.
 
-    Snapshot IDs are used as logger steps because TorchInstruments cannot observe a universal
+    Sample IDs are used as logger steps because TorchInstruments cannot observe a universal
     optimizer-step counter. The supplied logger remains caller-owned and is never saved, flushed,
     or finalized by this sink.
     """
@@ -45,47 +45,47 @@ class MetricLoggerSink:
         del run, modules
         self._initialized = True
 
-    def write_snapshot(self, snapshot: SnapshotRecord) -> None:
+    def observe(self, sample: SampleRecord) -> None:
         """Log forward values once and only new gradient values after backward."""
         if not self._initialized:
-            raise RuntimeError("sink must be initialized before writing snapshots")
-        metrics = _flatten_snapshot(snapshot, prefix=self._prefix)
-        self._logger.log_metrics(metrics, step=snapshot.snapshot_id)
+            raise RuntimeError("sink must be initialized before observing samples")
+        metrics = _flatten_sample(sample, prefix=self._prefix)
+        self._logger.log_metrics(metrics, step=sample.sample_id)
 
     def close(self) -> None:
         """Detach this sink without finalizing its externally owned logger."""
         self._initialized = False
 
 
-def _flatten_snapshot(snapshot: SnapshotRecord, *, prefix: str) -> dict[str, float]:
-    """Flatten the lifecycle stage that is new in one snapshot write."""
-    if snapshot.state is SnapshotState.FORWARD_COMPLETE:
-        metric_records = _forward_records(snapshot)
+def _flatten_sample(sample: SampleRecord, *, prefix: str) -> dict[str, float]:
+    """Flatten the lifecycle stage newly available in one sample event."""
+    if sample.state is SampleState.FORWARD_COMPLETE:
+        metric_records = _forward_records(sample)
         duration_name = "forward_collection_duration_ms"
     else:
-        metric_records = _backward_records(snapshot)
+        metric_records = _backward_records(sample)
         duration_name = "total_collection_duration_ms"
 
-    metrics = {f"{prefix}/observer/{duration_name}": snapshot.collection_duration_ms}
+    metrics = {f"{prefix}/observer/{duration_name}": sample.collection_duration_ms}
     for metric_name, value in metric_records:
         metrics[f"{prefix}/{metric_name}"] = value
     return metrics
 
 
-def _forward_records(snapshot: SnapshotRecord) -> list[tuple[str, float]]:
+def _forward_records(sample: SampleRecord) -> list[tuple[str, float]]:
     """Flatten selected-module output statistics in deterministic order."""
     records: list[tuple[str, float]] = []
-    for module_name in sorted(snapshot.modules):
-        for call in snapshot.modules[module_name]:
+    for module_name in sorted(sample.modules):
+        for call in sample.modules[module_name]:
             records.extend(_tensor_metrics(module_name, call.call_index, call.outputs))
     return records
 
 
-def _backward_records(snapshot: SnapshotRecord) -> list[tuple[str, float]]:
+def _backward_records(sample: SampleRecord) -> list[tuple[str, float]]:
     """Flatten only output-gradient statistics added by the backward rewrite."""
     records: list[tuple[str, float]] = []
-    for module_name in sorted(snapshot.modules):
-        for call in snapshot.modules[module_name]:
+    for module_name in sorted(sample.modules):
+        for call in sample.modules[module_name]:
             records.extend(_tensor_metrics(module_name, call.call_index, call.output_gradients))
     return records
 

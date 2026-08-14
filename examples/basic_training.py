@@ -10,10 +10,7 @@ from torch import nn
 
 from torchinstruments import (
     AlwaysSampler,
-    DirectorySink,
-    default_reducers,
     inject_observer,
-    leaf_modules,
     remove_observer,
 )
 
@@ -46,17 +43,14 @@ def run_demo(output_dir: Path) -> None:
     """Run instrumented training and always detach hooks before returning.
 
     ``AlwaysSampler`` makes this short demonstration deterministic: each root forward creates a
-    snapshot. Production training can omit ``sampler`` to use the one-minute default interval.
+    sample. Production training can omit ``sampler`` to use the one-minute default interval.
     """
     torch.manual_seed(7)
     model = build_model()
     inject_observer(
         model,
         sampler=AlwaysSampler(),
-        selector=leaf_modules(),
-        reducers=default_reducers(),
-        sink=DirectorySink(output_dir),
-        error_policy="warn",
+        output_dir=output_dir,
     )
     try:
         train(model)

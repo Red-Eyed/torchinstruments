@@ -18,7 +18,7 @@ def write_json_atomic(path: Path, value: object) -> None:
     """Serialize ``value`` as strict JSON and atomically replace ``path``.
 
     The temporary file is flushed and synchronized before replacement so readers never observe
-    a partially written snapshot.
+    a partially written live record.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(

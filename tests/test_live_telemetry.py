@@ -1,4 +1,4 @@
-"""Tests for snapshot structure, correlation, dtypes, and error isolation."""
+"""Tests for live telemetry structure, correlation, dtypes, and error isolation."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import torch
 from dirty_equals import IsNonNegative, IsNow, IsPartialDict
 from torch import nn
 
-from tests.json_records import read_modules, read_run, read_snapshot
+from tests.json_records import read_stats
 from torchinstruments import AlwaysSampler, histogram, inject_observer, remove_observer
 from torchinstruments.reducers import ReducedScalar
 
@@ -66,8 +66,8 @@ def test_nested_outputs_receive_stable_paths(telemetry_dir: Path) -> None:
 
     model(torch.randn(2, 4))
 
-    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    outputs = snapshot["modules"][""][0]["outputs"]
+    stats = read_stats(telemetry_dir / "stats.json")
+    outputs = stats["layers"][""][0]["outputs"]
     assert list(outputs) == ["output.hidden_states.0", "output.logits"]
     remove_observer(model)
 
@@ -79,10 +79,9 @@ def test_shared_module_calls_are_not_overwritten(telemetry_dir: Path) -> None:
 
     model(torch.randn(2, 4))
 
-    modules = read_modules(telemetry_dir / "modules.json")
-    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    assert modules["first"]["aliases"] == ["first", "second"]
-    assert [call["call_index"] for call in snapshot["modules"]["first"]] == [0, 1]
+    stats = read_stats(telemetry_dir / "stats.json")
+    assert stats["module_catalog"]["first"]["aliases"] == ["first", "second"]
+    assert [call["call_index"] for call in stats["layers"]["first"]] == [0, 1]
     remove_observer(model)
 
 
@@ -95,22 +94,16 @@ def test_multiple_forwards_are_correlated_with_their_backwards(telemetry_dir: Pa
 
     (first.sum() + second.sum()).backward()
 
-    first_snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    second_snapshot = read_snapshot(telemetry_dir / "snapshots" / "000001.json")
-    assert first_snapshot["state"] == "backward_observed"
-    assert second_snapshot["state"] == "backward_observed"
-    assert first_snapshot["modules"][""][0]["output_gradients"]["grad_output"]["shape"] == [
-        2,
-        3,
-    ]
-    assert second_snapshot["modules"][""][0]["output_gradients"]["grad_output"]["shape"] == [
-        5,
-        3,
-    ]
+    stats = read_stats(telemetry_dir / "stats.json")
+    gradients = stats["layers"][""][0]["output_gradients"]["grad_output"]
+    assert stats["samples_observed"] == 2
+    assert stats["backward_samples_observed"] == 2
+    assert gradients["observations"] == 2
+    assert gradients["shape_changes"] == 1
     remove_observer(model)
 
 
-def test_unused_differentiable_output_does_not_block_backward_snapshot(
+def test_unused_differentiable_output_does_not_block_backward_aggregation(
     telemetry_dir: Path,
 ) -> None:
     """Finalize backward telemetry when only a subset of outputs contributes to loss."""
@@ -120,9 +113,9 @@ def test_unused_differentiable_output_does_not_block_backward_snapshot(
 
     used.sum().backward()
 
-    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    gradients = snapshot["modules"][""][0]["output_gradients"]
-    assert snapshot["state"] == "backward_observed"
+    stats = read_stats(telemetry_dir / "stats.json")
+    gradients = stats["layers"][""][0]["output_gradients"]
+    assert stats["backward_samples_observed"] == 1
     assert set(gradients) == {"grad_output.0"}
     remove_observer(model)
 
@@ -138,10 +131,10 @@ def test_supported_floating_dtypes_are_recorded(
 
     model(torch.ones(4, dtype=dtype))
 
-    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    output = snapshot["modules"][""][0]["outputs"]["output"]
+    stats = read_stats(telemetry_dir / "stats.json")
+    output = stats["layers"][""][0]["outputs"]["output"]
     assert output["dtype"] == str(dtype).removeprefix("torch.")
-    assert output["stats"]["mean"] == pytest.approx(1.0)
+    assert output["latest_statistics"]["mean"] == pytest.approx(1.0)
     remove_observer(model)
 
 
@@ -152,13 +145,13 @@ def test_statistics_use_finite_values_and_report_fraction(telemetry_dir: Path) -
 
     model(torch.tensor([float("nan"), float("inf"), 2.0]))
 
-    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    stats = snapshot["modules"][""][0]["outputs"]["output"]["stats"]
-    assert stats["mean"] == pytest.approx(2.0)
-    assert stats["std"] == pytest.approx(0.0)
-    assert stats["rms"] == pytest.approx(2.0)
-    assert stats["max_abs"] == pytest.approx(2.0)
-    assert stats["finite_fraction"] == pytest.approx(1 / 3)
+    live = read_stats(telemetry_dir / "stats.json")
+    latest = live["layers"][""][0]["outputs"]["output"]["latest_statistics"]
+    assert latest["mean"] == pytest.approx(2.0)
+    assert latest["std"] == pytest.approx(0.0)
+    assert latest["rms"] == pytest.approx(2.0)
+    assert latest["max_abs"] == pytest.approx(2.0)
+    assert latest["finite_fraction"] == pytest.approx(1 / 3)
     remove_observer(model)
 
 
@@ -169,36 +162,36 @@ def test_empty_tensor_records_unavailable_statistics(telemetry_dir: Path) -> Non
 
     model(torch.empty(0))
 
-    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    output = snapshot["modules"][""][0]["outputs"]["output"]
-    assert output["stats"] == {}
-    assert set(output["unavailable_stats"]) == {
+    stats = read_stats(telemetry_dir / "stats.json")
+    output = stats["layers"][""][0]["outputs"]["output"]
+    assert output["latest_statistics"] == {}
+    assert {
         "finite_fraction",
         "max_abs",
         "mean",
         "rms",
         "std",
-    }
+    }.issubset(output["latest_unavailable_statistics"])
     remove_observer(model)
 
 
-def test_snapshot_json_contains_lossless_histogram_data(telemetry_dir: Path) -> None:
+def test_live_json_contains_lossless_histogram_data(telemetry_dir: Path) -> None:
     """Persist bins, outliers, moments, and non-finite counts in canonical JSON."""
     model = nn.Identity()
     inject_observer(
         model,
         sampler=AlwaysSampler(),
         histograms=[
-            histogram(bins=2, value_range=(-1.0, 1.0), every_n_snapshots=1),
+            histogram(bins=2, value_range=(-1.0, 1.0), every_n_samples=1),
         ],
         output_dir=telemetry_dir,
     )
 
     model(torch.tensor([-2.0, -1.0, 0.0, 1.0, 2.0, float("nan")]))
 
-    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    output = snapshot["modules"][""][0]["outputs"]["output"]
-    record = output["histograms"]["distribution"]
+    stats = read_stats(telemetry_dir / "stats.json")
+    output = stats["layers"][""][0]["outputs"]["output"]
+    record = output["histograms"]["distribution"]["aggregate"]
     assert record["bin_edges"] == [-1.0, 0.0, 1.0]
     assert record["bin_counts"] == [1, 2]
     assert record["underflow_count"] == 1
@@ -236,9 +229,9 @@ def test_reducer_errors_are_recorded(
     with context:
         model(torch.ones(1))
 
-    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    assert snapshot["errors"][0]["exception_type"] == "RuntimeError"
-    assert snapshot["errors"][0]["message"] == "broken reducer"
+    stats = read_stats(telemetry_dir / "stats.json")
+    assert stats["errors"][0]["exception_type"] == "RuntimeError"
+    assert stats["errors"][0]["message"] == "broken reducer"
     remove_observer(model)
 
 
@@ -264,33 +257,28 @@ def test_raise_error_policy_propagates_reducer_failure(telemetry_dir: Path) -> N
     remove_observer(model)
 
 
-def test_run_and_snapshot_records_are_versioned(telemetry_dir: Path) -> None:
-    """Emit versioned run and snapshot records with dynamic fields of valid types."""
+def test_live_record_is_versioned_and_self_describing(telemetry_dir: Path) -> None:
+    """Emit one versioned live record with run, module, and reducer metadata."""
     model = nn.Identity()
     inject_observer(model, sampler=AlwaysSampler(), output_dir=telemetry_dir)
     model(torch.ones(1))
 
-    run = read_run(telemetry_dir / "run.json")
-    snapshot = read_snapshot(telemetry_dir / "snapshots" / "000000.json")
-    assert run["schema_version"] == 3
+    stats = read_stats(telemetry_dir / "stats.json")
+    run = stats["run"]
+    assert stats["schema_version"] == 4
+    assert run["schema_version"] == 4
     assert run["created_at"] == IsNow(iso_string=True, tz=UTC)
     assert run["sampling"] == {"settings": {}, "type": "always"}
-    assert run["collection"] == {
-        "invocation_capture": "pytorch_hooks",
-        "signals": ["module_outputs", "module_output_gradients"],
-        "scalar_reducers": [
-            {
-                "type": "statistics",
-                "settings": {
-                    "metrics": ["mean", "std", "rms", "max_abs", "finite_fraction"],
-                },
-            }
-        ],
-        "histogram_reducers": [],
-    }
-    assert snapshot == IsPartialDict(
-        schema_version=3,
-        snapshot_id=0,
-        collection_duration_ms=IsNonNegative,
+    assert run["collection"]["invocation_capture"] == "pytorch_hooks"
+    assert run["collection"]["signals"] == ["module_outputs", "module_output_gradients"]
+    metrics = run["collection"]["scalar_reducers"][0]["settings"]["metrics"]
+    if not isinstance(metrics, list):
+        raise TypeError("serialized reducer metrics must be a list")
+    assert {"skewness", "excess_kurtosis", "p999_abs", "max_to_rms"}.issubset(metrics)
+    assert stats == IsPartialDict(
+        schema_version=4,
+        samples_observed=1,
+        backward_samples_observed=0,
+        dropped_series=IsNonNegative,
     )
     remove_observer(model)

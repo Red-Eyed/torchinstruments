@@ -8,6 +8,7 @@ import torch
 from torchinstruments import combine, finite_fraction, histogram, max_abs, mean, rms, std
 from torchinstruments.reducers import (
     HistogramReductionResult,
+    default_reducers,
     reduce_histograms,
     reduce_tensor,
 )
@@ -35,6 +36,21 @@ def test_float64_reductions_are_not_downcast_during_transfer() -> None:
     assert result.stats["mean"] == pytest.approx(1e40)
 
 
+def test_default_profile_distinguishes_equal_scale_but_skewed_distributions() -> None:
+    """Expose asymmetry and tails that identical mean and standard deviation hide."""
+    symmetric = reduce_tensor(torch.tensor([-1.0, -1.0, 1.0, 1.0]), default_reducers())
+    skewed = reduce_tensor(
+        torch.tensor([-0.5773503, -0.5773503, -0.5773503, 1.7320508]),
+        default_reducers(),
+    )
+
+    assert symmetric.stats["mean"] == pytest.approx(skewed.stats["mean"], abs=1e-6)
+    assert symmetric.stats["std"] == pytest.approx(skewed.stats["std"], rel=1e-5)
+    assert symmetric.stats["skewness"] == pytest.approx(0.0)
+    assert skewed.stats["skewness"] > 1.0
+    assert skewed.stats["p999_abs_to_rms"] > symmetric.stats["p999_abs_to_rms"]
+
+
 def test_combining_duplicate_builtin_metrics_is_rejected() -> None:
     """Reject ambiguous mappings with duplicate built-in metric names."""
     with pytest.raises(ValueError, match="duplicate metrics"):
@@ -55,9 +71,9 @@ def test_reducer_output_must_be_scalar() -> None:
 def test_fixed_histogram_preserves_outliers_nonfinite_counts_and_moments() -> None:
     """Retain every value needed to reconstruct a fixed-range histogram."""
     values = torch.tensor([-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, float("nan")])
-    reducer = histogram(bins=2, value_range=(-1.0, 1.0), every_n_snapshots=1)
+    reducer = histogram(bins=2, value_range=(-1.0, 1.0), every_n_samples=1)
 
-    result = reduce_histograms(values, [reducer], snapshot_id=0)
+    result = reduce_histograms(values, [reducer], sample_id=0)
 
     record = result.histograms["distribution"]
     assert record.bin_edges == pytest.approx((-1.0, 0.0, 1.0))
@@ -72,12 +88,12 @@ def test_fixed_histogram_preserves_outliers_nonfinite_counts_and_moments() -> No
     assert record.sum_squares == pytest.approx(10.5)
 
 
-def test_histogram_cadence_is_independent_of_snapshot_sampling() -> None:
-    """Collect the first histogram and then only each configured snapshot interval."""
-    reducer = histogram(every_n_snapshots=2)
+def test_histogram_cadence_is_independent_of_forward_sampling() -> None:
+    """Collect the first histogram and then only each configured sample interval."""
+    reducer = histogram(every_n_samples=2)
 
-    skipped = reduce_histograms(torch.ones(4), [reducer], snapshot_id=1)
-    collected = reduce_histograms(torch.ones(4), [reducer], snapshot_id=2)
+    skipped = reduce_histograms(torch.ones(4), [reducer], sample_id=1)
+    collected = reduce_histograms(torch.ones(4), [reducer], sample_id=2)
 
     assert skipped.histograms == {}
     assert skipped.unavailable_histograms == {}
@@ -86,9 +102,9 @@ def test_histogram_cadence_is_independent_of_snapshot_sampling() -> None:
 
 def test_histogram_without_finite_values_carries_a_reason() -> None:
     """Represent an attempted but impossible histogram without JSON nulls or NaNs."""
-    reducer = histogram(every_n_snapshots=1)
+    reducer = histogram(every_n_samples=1)
 
-    result = reduce_histograms(torch.tensor([float("nan"), float("inf")]), [reducer], snapshot_id=0)
+    result = reduce_histograms(torch.tensor([float("nan"), float("inf")]), [reducer], sample_id=0)
 
     assert result.histograms == {}
     assert result.unavailable_histograms == {"distribution": "tensor has no finite values"}
@@ -101,17 +117,17 @@ def test_custom_histogram_reducer_receives_a_detached_tensor() -> None:
     def custom_histogram(
         tensor: torch.Tensor,
         *,
-        snapshot_id: int,
+        sample_id: int,
     ) -> HistogramReductionResult:
         """Record graph attachment without producing a histogram."""
-        del snapshot_id
+        del sample_id
         observed_requires_grad.append(tensor.requires_grad)
         return HistogramReductionResult(histograms={}, unavailable_histograms={})
 
     reduce_histograms(
         torch.ones(2, requires_grad=True),
         [custom_histogram],
-        snapshot_id=0,
+        sample_id=0,
     )
 
     assert observed_requires_grad == [False]
@@ -121,7 +137,7 @@ def test_custom_histogram_reducer_receives_a_detached_tensor() -> None:
     ("kwargs", "message"),
     [
         ({"bins": 0}, "bins"),
-        ({"every_n_snapshots": 0}, "every_n_snapshots"),
+        ({"every_n_samples": 0}, "every_n_samples"),
         ({"value_range": (1.0, 1.0)}, "lower bound"),
         ({"name": " "}, "name"),
     ],

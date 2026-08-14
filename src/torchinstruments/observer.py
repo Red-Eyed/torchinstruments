@@ -28,9 +28,9 @@ from torchinstruments.records import (
     ModuleRecord,
     ReducerRecord,
     RunRecord,
+    SampleRecord,
+    SampleState,
     SamplingRecord,
-    SnapshotRecord,
-    SnapshotState,
     TensorRecord,
 )
 from torchinstruments.reducers import HistogramReducer, Reducer, reduce_histograms, reduce_tensor
@@ -45,7 +45,7 @@ _NOT_COLLECTING = object()
 
 @dataclass(frozen=True)
 class _GradientBinding:
-    """Locate one gradient record inside a snapshot's module-call structure."""
+    """Locate one gradient record inside a sample's module-call structure."""
 
     module_name: str
     call_index: int
@@ -69,24 +69,25 @@ class _MutableModuleCall:
     output_gradients: dict[str, TensorRecord] = field(default_factory=dict)
 
 
-class _SnapshotBuilder:
-    """Build one snapshot while its forward and optional backward are in flight."""
+class _SampleBuilder:
+    """Build one transient sample while its forward and optional backward are in flight."""
 
     def __init__(
         self,
         *,
-        snapshot_id: int,
+        sample_id: int,
         forward_index: int,
         timestamp: datetime,
     ) -> None:
         """Initialize compact mutable state for one sampled root forward."""
-        self.snapshot_id = snapshot_id
+        self.sample_id = sample_id
         self.forward_index = forward_index
         self.timestamp = timestamp
-        self.state = SnapshotState.FORWARD_COMPLETE
+        self.state = SampleState.FORWARD_COMPLETE
         self.collection_duration_ns = 0
         self.module_calls: dict[str, list[_MutableModuleCall]] = {}
         self.errors: list[ErrorRecord] = []
+        self._reported_error_count = 0
         self._gradient_targets: list[tuple[torch.Tensor, _GradientBinding]] = []
         self._lock = threading.Lock()
 
@@ -142,17 +143,17 @@ class _SnapshotBuilder:
             self.collection_duration_ns += duration_ns
 
     def add_error(self, error: ErrorRecord) -> None:
-        """Append an isolated collection failure to the snapshot."""
+        """Append an isolated collection failure to the current sample."""
         with self._lock:
             self.errors.append(error)
 
     def mark_backward_observed(self) -> None:
-        """Transition the snapshot after its first correlated backward callback."""
+        """Transition the sample after its first correlated backward callback."""
         with self._lock:
-            self.state = SnapshotState.BACKWARD_OBSERVED
+            self.state = SampleState.BACKWARD_OBSERVED
 
-    def to_record(self) -> SnapshotRecord:
-        """Freeze current mutable state into a normalized persistence record."""
+    def to_record(self) -> SampleRecord:
+        """Freeze one lifecycle event and report each collection error only once."""
         with self._lock:
             modules = {
                 module_name: tuple(
@@ -165,15 +166,17 @@ class _SnapshotBuilder:
                 )
                 for module_name, calls in self.module_calls.items()
             }
-            return SnapshotRecord(
+            new_errors = tuple(self.errors[self._reported_error_count :])
+            self._reported_error_count = len(self.errors)
+            return SampleRecord(
                 schema_version=SCHEMA_VERSION,
-                snapshot_id=self.snapshot_id,
+                sample_id=self.sample_id,
                 forward_index=self.forward_index,
                 timestamp=self.timestamp,
                 state=self.state,
                 collection_duration_ms=self.collection_duration_ns / 1_000_000,
                 modules=modules,
-                errors=tuple(self.errors),
+                errors=new_errors,
             )
 
 
@@ -208,7 +211,7 @@ class Observer:
         self._wall_clock = wall_clock
         self._performance_clock = performance_clock
         self._forward_index = 0
-        self._snapshot_id = 0
+        self._sample_id = 0
         self._id_lock = threading.Lock()
         self._sink_lock = threading.Lock()
         # Weak ownership lets completed or abandoned graphs release callback handles naturally,
@@ -334,8 +337,8 @@ class Observer:
 
         context: object = _NOT_COLLECTING
         if should_sample:
-            context = _SnapshotBuilder(
-                snapshot_id=self._next_snapshot_id(),
+            context = _SampleBuilder(
+                sample_id=self._next_sample_id(),
                 forward_index=forward_index,
                 timestamp=self._wall_clock(),
             )
@@ -344,20 +347,20 @@ class Observer:
         self._contexts.set((*stack, context))
 
     def _finish_root_forward(self) -> None:
-        """Close the current root-forward context and persist its forward snapshot."""
+        """Close the current root-forward context and emit its forward measurements."""
         stack = self._contexts.get()
         if not stack:
             return
 
         context = stack[-1]
         self._contexts.set(stack[:-1])
-        if not isinstance(context, _SnapshotBuilder):
+        if not isinstance(context, _SampleBuilder):
             return
 
         targets = context.take_gradient_targets()
         if targets:
             self._register_gradient_hook(context, targets)
-        self._write_snapshot(context)
+        self._emit_sample(context)
 
     def _collect_module_output(self, module_name: str, output: object) -> None:
         """Reduce one selected output only while its root context is sampled."""
@@ -365,7 +368,7 @@ class Observer:
         if not stack:
             return
         context = stack[-1]
-        if not isinstance(context, _SnapshotBuilder):
+        if not isinstance(context, _SampleBuilder):
             return
 
         started_at = self._performance_clock()
@@ -375,7 +378,7 @@ class Observer:
                 try:
                     record = self._tensor_record(
                         leaf.tensor,
-                        snapshot_id=context.snapshot_id,
+                        sample_id=context.sample_id,
                     )
                     context.add_output(module_name, call, leaf.path, leaf.tensor, record)
                 except Exception as error:
@@ -390,7 +393,7 @@ class Observer:
 
     def _register_gradient_hook(
         self,
-        builder: _SnapshotBuilder,
+        builder: _SampleBuilder,
         targets: tuple[_GradientTarget, ...],
     ) -> None:
         """Bind compact gradient collection to the exact sampled autograd graph."""
@@ -400,7 +403,7 @@ class Observer:
         bindings = tuple(target.bindings for target in targets)
 
         def collect_gradients(gradients: Sequence[torch.Tensor | None]) -> None:
-            """Record the first backward's available output gradients and rewrite the snapshot."""
+            """Emit available output gradients from the first correlated backward."""
             nonlocal fired
             with fired_lock:
                 if fired:
@@ -418,7 +421,7 @@ class Observer:
                                 binding,
                                 self._tensor_record(
                                     gradient,
-                                    snapshot_id=builder.snapshot_id,
+                                    sample_id=builder.sample_id,
                                 ),
                             )
                         except Exception as error:
@@ -433,7 +436,7 @@ class Observer:
                 builder.add_collection_duration(self._performance_clock() - started_at)
                 self._discard_gradient_handle(handle)
 
-            self._write_snapshot(builder)
+            self._emit_sample(builder)
 
         tensors = tuple(target.tensor for target in targets)
         try:
@@ -458,13 +461,13 @@ class Observer:
         with self._gradient_handles_lock:
             self._gradient_hook_handles.discard(handle)
 
-    def _tensor_record(self, tensor: torch.Tensor, *, snapshot_id: int) -> TensorRecord:
+    def _tensor_record(self, tensor: torch.Tensor, *, sample_id: int) -> TensorRecord:
         """Reduce a tensor into metadata and compact CPU-native diagnostics."""
         reduction = reduce_tensor(tensor, self._reducers)
         histogram_reduction = reduce_histograms(
             tensor,
             self._histogram_reducers,
-            snapshot_id=snapshot_id,
+            sample_id=sample_id,
         )
         dtype = str(tensor.dtype).removeprefix("torch.")
         return TensorRecord(
@@ -485,23 +488,23 @@ class Observer:
             self._forward_index += 1
         return forward_index
 
-    def _next_snapshot_id(self) -> int:
+    def _next_sample_id(self) -> int:
         """Allocate a contiguous thread-safe identifier for sampled forwards only."""
         with self._id_lock:
-            snapshot_id = self._snapshot_id
-            self._snapshot_id += 1
-        return snapshot_id
+            sample_id = self._sample_id
+            self._sample_id += 1
+        return sample_id
 
-    def _write_snapshot(self, builder: _SnapshotBuilder) -> None:
-        """Serialize one consistent builder view under the sink lock."""
+    def _emit_sample(self, builder: _SampleBuilder) -> None:
+        """Deliver one consistent lifecycle event under the sink lock."""
         try:
             with self._sink_lock:
-                self._sink.write_snapshot(builder.to_record())
+                self._sink.observe(builder.to_record())
         except Exception as error:
             self._handle_error(
                 error,
                 builder=builder,
-                module_name=Absent("snapshot write is run-level"),
+                module_name=Absent("sample delivery is run-level"),
                 probe="sink",
             )
 
@@ -509,7 +512,7 @@ class Observer:
         self,
         error: Exception,
         *,
-        builder: _SnapshotBuilder | None,
+        builder: _SampleBuilder | None,
         module_name: str | Absent,
         probe: str,
     ) -> None:

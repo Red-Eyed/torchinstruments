@@ -32,35 +32,35 @@ class HistogramReductionResult:
 
 
 class HistogramReducer(Protocol):
-    """Produce compact named histograms for one tensor and snapshot identifier."""
+    """Produce compact named histograms for one tensor and sample identifier."""
 
     def __call__(
         self,
         tensor: torch.Tensor,
         *,
-        snapshot_id: int,
+        sample_id: int,
     ) -> HistogramReductionResult:
-        """Reduce ``tensor`` when its independent snapshot policy is eligible."""
+        """Reduce ``tensor`` when its independent sample policy is eligible."""
         ...
 
 
 @dataclass(frozen=True)
 class _ConfiguredHistogram:
-    """Apply one validated histogram definition at a fixed snapshot cadence."""
+    """Apply one validated histogram definition at a fixed sample cadence."""
 
     name: str
     bins: int
     value_range: HistogramValueRange
-    every_n_snapshots: int
+    every_n_samples: int
 
     def __call__(
         self,
         tensor: torch.Tensor,
         *,
-        snapshot_id: int,
+        sample_id: int,
     ) -> HistogramReductionResult:
-        """Return one histogram on eligible snapshots without copying raw values to CPU."""
-        if snapshot_id % self.every_n_snapshots != 0:
+        """Return one histogram on eligible samples without copying raw values to CPU."""
+        if sample_id % self.every_n_samples != 0:
             return HistogramReductionResult(histograms={}, unavailable_histograms={})
 
         try:
@@ -90,7 +90,7 @@ class _ConfiguredHistogram:
             "name": self.name,
             "bins": self.bins,
             "value_range": serialized_range,
-            "every_n_snapshots": self.every_n_snapshots,
+            "every_n_samples": self.every_n_samples,
         }
 
 
@@ -103,11 +103,11 @@ def histogram(
     name: str = "distribution",
     bins: int = 64,
     value_range: HistogramValueRange = HistogramRange.DYNAMIC,
-    every_n_snapshots: int = 10,
+    every_n_samples: int = 10,
 ) -> HistogramReducer:
     """Build an independently sampled finite-value histogram reducer.
 
-    Snapshot zero is eligible, followed by every ``every_n_snapshots`` snapshot. A fixed
+    Sample zero is eligible, followed by every ``every_n_samples`` sample. A fixed
     ``(lower, upper)`` range makes bins comparable over time and records out-of-range values
     separately. ``HistogramRange.DYNAMIC`` covers each tensor's finite minimum and maximum.
 
@@ -115,7 +115,7 @@ def histogram(
         name: Stable record name used in JSON and dashboard paths.
         bins: Number of regular bins, excluding underflow and overflow counts.
         value_range: Fixed finite bounds or a per-tensor dynamic range.
-        every_n_snapshots: Independent cadence relative to sampled snapshot identifiers.
+        every_n_samples: Independent cadence relative to sampled-forward identifiers.
 
     Raises:
         ValueError: If the name, bin count, cadence, or fixed bounds are invalid.
@@ -125,14 +125,14 @@ def histogram(
         raise ValueError("histogram name must not be empty")
     if isinstance(bins, bool) or bins <= 0:
         raise ValueError("histogram bins must be greater than zero")
-    if isinstance(every_n_snapshots, bool) or every_n_snapshots <= 0:
-        raise ValueError("every_n_snapshots must be greater than zero")
+    if isinstance(every_n_samples, bool) or every_n_samples <= 0:
+        raise ValueError("every_n_samples must be greater than zero")
     _validate_value_range(value_range)
     return _ConfiguredHistogram(
         name=normalized_name,
         bins=bins,
         value_range=value_range,
-        every_n_snapshots=every_n_snapshots,
+        every_n_samples=every_n_samples,
     )
 
 
@@ -140,14 +140,14 @@ def reduce_histograms(
     tensor: torch.Tensor,
     reducers: Sequence[HistogramReducer],
     *,
-    snapshot_id: int,
+    sample_id: int,
 ) -> HistogramReductionResult:
     """Evaluate configured histogram reducers and reject duplicate record names."""
     histograms: dict[str, HistogramRecord] = {}
     unavailable: dict[str, str] = {}
     detached = tensor.detach()
     for reducer in reducers:
-        result = reducer(detached, snapshot_id=snapshot_id)
+        result = reducer(detached, sample_id=sample_id)
         _merge_unique(histograms, result.histograms, "histogram")
         _merge_unique(unavailable, result.unavailable_histograms, "unavailable histogram")
         duplicate = histograms.keys() & unavailable.keys()

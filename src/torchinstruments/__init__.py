@@ -2,6 +2,7 @@
 
 from importlib.metadata import version
 
+from torchinstruments.aggregation import Aggregator, IndicatorConfig, LiveAggregator
 from torchinstruments.api import has_observer, inject_observer, remove_observer
 from torchinstruments.errors import ErrorPolicy, ObserverAlreadyAttachedError
 from torchinstruments.reducers import (
@@ -33,6 +34,7 @@ from torchinstruments.sinks import (
 __version__ = version("torchinstruments")
 
 __all__ = [
+    "Aggregator",
     "AlwaysSampler",
     "CompositeSink",
     "DirectorySink",
@@ -41,6 +43,8 @@ __all__ = [
     "HistogramRange",
     "HistogramReducer",
     "HistogramValueRange",
+    "IndicatorConfig",
+    "LiveAggregator",
     "MetricLogger",
     "MetricLoggerSink",
     "ObserverAlreadyAttachedError",

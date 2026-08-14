@@ -1,38 +1,29 @@
 # LLM-assisted analysis
 
-TorchInstruments emits descriptive JSON so an LLM can inspect telemetry without TensorBoard event
-parsing or knowledge of the Python process that created it. The LLM is an analysis assistant, not
-an oracle: it can rank suspicious signatures and propose discriminating experiments, but telemetry
-alone cannot establish why validation accuracy is low.
+TorchInstruments maintains one self-describing `stats.json` so an LLM can inspect a complete live
+summary without selecting or parsing thousands of per-sample files. The LLM is an analysis
+assistant, not an oracle: indicators can rank suspicious signatures and motivate experiments, but
+they cannot establish why task accuracy is low.
 
-Every directory-backed run generates `index.md`. For an LLM with filesystem access, the shortest
-workflow is to point it at that file and state the research question; the index supplies the file
-map, observed fields, evidence limits, and analysis prompt.
-
-## Provide a bounded evidence set
+## Provide the evidence
 
 For one run, provide:
 
-- `run.json` for schema, package version, and sampling semantics;
-- `modules.json` for module types, aliases, and parameter counts;
-- a small set of relevant snapshot files;
+- `index.md` and `stats.json`;
 - the research question and task-level outcome, such as validation accuracy;
 - the exact intervention when comparing model revisions.
 
-For a short run, all snapshots may fit. For a long run, begin with a few meaningfully chosen points,
-such as early, middle, late, and the first snapshot near a known accuracy or loss change. Do not
-upload thousands of snapshots blindly. Automatic cross-snapshot summaries are roadmap work; until
-they exist, snapshot selection is part of the research design.
+The JSON includes run configuration, module identities, current tensor distributions, forward and
+backward temporal indicators, extrema locations, histogram aggregates, and instrumentation errors.
+It does not include raw tensors, examples, labels, loss, or optimizer updates.
 
-Module names and parameter counts can reveal proprietary architecture details even though raw
-tensors are never stored. Review telemetry before sending it to an external service.
+Module names and parameter counts can still reveal proprietary architecture details. Review the
+file before sending it to an external service.
 
 ## Use an evidence-constrained prompt
 
-Copy the following prompt and attach the selected JSON files:
-
 ```text
-You are analyzing TorchInstruments telemetry from a PyTorch research run.
+You are analyzing TorchInstruments live telemetry from a PyTorch research run.
 
 Research question:
 <state the accuracy problem or model comparison>
@@ -40,46 +31,80 @@ Research question:
 Task-level evidence:
 <validation metric, baseline, candidate, intervention, and relevant training interval>
 
-Analyze only claims supported by the attached run.json, modules.json, and snapshots.
+Read index.md and stats.json. Analyze only measurements present in those files.
 
-1. Summarize the sampling policy and which signals were actually observed.
-2. Identify the earliest modules and snapshots with suspicious activation RMS,
-   output-gradient RMS, max_abs relative to RMS, finite_fraction, or histogram shape.
-3. Separate every conclusion into:
-   - Observed fact: exact module, snapshot ID, metric, and value.
-   - Hypothesis: one or more mechanisms consistent with that fact.
-   - Missing evidence: what telemetry or task information is needed to distinguish them.
+1. Summarize sampling, capture, observed modules, forward samples, backward samples,
+   dropped series, and indicator warm-up.
+2. Rank modules showing the strongest evidence of:
+   - activation or gradient scale drift;
+   - persistent momentum or a fast/slow EMA divergence;
+   - high volatility or oscillation;
+   - a CUSUM regime change;
+   - growing skewness, kurtosis, or tail-to-RMS ratios;
+   - non-finite or zero-fraction deterioration;
+   - collapse from a previous maximum or growth from a previous minimum.
+3. For every finding provide:
+   - Observed fact: exact module, call index, tensor path, metric, indicator, and value.
+   - Interpretation: what the measurement directly means.
+   - Hypothesis: mechanisms consistent with the measurement.
+   - Missing evidence: what is needed to distinguish those mechanisms.
    - Next experiment: the smallest controlled test that could falsify the hypothesis.
-4. Rank findings by likely impact and confidence.
-5. State explicitly when the evidence does not explain the accuracy gap.
+4. Treat indicators with warmup_complete=false as weak evidence.
+5. State explicitly when telemetry does not explain the task-level result.
 
-Do not claim that an optimizer update was observed. Do not infer module inputs,
-parameter gradients, loss values, data quality, or causal effects unless those were
-provided separately.
+Do not claim that an optimizer update, loss, input, parameter gradient, data-quality issue,
+or causal effect was observed unless it was supplied separately.
 ```
+
+## Read the hierarchy correctly
+
+The useful path is:
+
+```text
+layers
+  → module name
+  → call index
+  → outputs or output_gradients
+  → tensor path
+  → latest_statistics or statistics
+  → one metric and its temporal indicators
+```
+
+`latest_statistics` describes the current sampled tensor distribution. `statistics` contains
+bounded temporal summaries for selected diagnostic metrics. Do not confuse standard deviation
+inside the latest tensor with temporal standard deviation across sampled forwards.
+
+Every temporal series includes first, latest, minimum, maximum, count, and warm-up state. Extreme
+points retain the sample ID and timestamp where they occurred, even though the complete historical
+series is not stored.
 
 ## Compare two runs
 
-Give each run a stable label such as `baseline` and `candidate`, and attach both run/module catalogs
-plus aligned snapshots. Ask for differences using exact metric paths and values. A useful comparison
-request is:
+Give each file a stable label such as `baseline` and `candidate`. Ask the LLM to match modules,
+call indices, tensor paths, and statistic names before comparing values:
 
 ```text
-For matched modules and snapshot positions, rank the largest changes in activation RMS,
-output-gradient RMS, max_abs/RMS, and finite_fraction. Distinguish module-name mismatches
-from measured changes. For each difference, explain what it suggests, what it does not prove,
-and the next experiment that would test its relevance to validation accuracy.
+Compare baseline/stats.json with candidate/stats.json.
+
+Rank the largest matched changes in:
+- first-to-latest RMS and gradient RMS;
+- temporal slope and slope R²;
+- fast/slow EMA relative gap;
+- volatility, oscillation, and CUSUM scores;
+- skewness, excess kurtosis, p999_abs, and max_to_rms;
+- finite_fraction and zero_fraction.
+
+Separate module/path mismatches from measured differences. For every difference, state what it
+suggests, what it cannot prove, and the smallest controlled experiment that tests its relevance
+to validation accuracy.
 ```
 
-The current built-in reducers do not emit `max_abs/RMS` directly. An LLM may calculate that ratio
-from `max_abs` and `rms` values in the same tensor record, but it should preserve the source values
-in its report so the calculation can be checked.
+Use the same selector, reducers, sampling policy, precision, data slice, and indicator
+configuration when making controlled comparisons.
 
-## Use JSON and TensorBoard for different jobs
+## JSON and TensorBoard have different retention
 
-TensorBoard is useful for visual trend discovery. Canonical JSON is better for LLM analysis because
-it preserves module calls, shapes, dtypes, unavailable-stat reasons, errors, snapshot lifecycle,
-and every histogram bin and moment. `TensorBoardSink` derives its events from those records, so an
-LLM can reproduce the same distribution evidence without parsing event files. When both are
-needed, use `CompositeSink(DirectorySink(...), TensorBoardSink(...))` rather than replacing
-structured telemetry with a dashboard-only destination.
+TensorBoard receives live per-sample scalar and histogram events for visual exploration.
+`stats.json` retains current distributions and bounded online indicators instead of replaying the
+complete event history. Both originate from the same normalized transient measurements, but the
+final live JSON intentionally cannot reconstruct every historical dashboard point.

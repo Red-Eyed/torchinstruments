@@ -2,6 +2,58 @@
 
 All notable changes to TorchInstruments are documented here.
 
+## [0.5.0] - 2026-08-14
+
+### Highlights
+
+- Replace per-sample JSON files with one atomically updated `stats.json` containing live per-layer
+  distribution and temporal indicators.
+- Distinguish skew, heavy tails, monotonic drift, oscillation, volatility, and regime changes that
+  mean and standard deviation alone cannot reveal.
+
+### Backwards Incompatible Changes
+
+#### Storage and sink lifecycle
+
+Versions through 0.4 wrote `run.json`, `modules.json`, and `snapshots/*.json`. Version 0.5 writes
+one canonical `stats.json` plus a derived `index.md`; consumers must read live layer summaries
+instead of enumerating sample files. Custom sinks now implement `observe(SampleRecord)` instead of
+`write_snapshot(SnapshotRecord)`, and transient identifiers are named sample IDs.
+
+#### Histogram cadence
+
+Rename `histogram(every_n_snapshots=...)` to `histogram(every_n_samples=...)`. Fixed-bin histograms
+are merged in live JSON; dynamic histograms retain their latest value and report why an aggregate
+becomes unavailable after edges change.
+
+### New Features
+
+- Add quantiles, skewness, excess kurtosis, sign and zero prevalence, norms, tail ratios, entropy,
+  and effective magnitude support to the default sampled tensor profile.
+- Add configurable fast/slow EMAs, momentum horizons, slope and `R²`, exponentially weighted
+  volatility, z-scores, drawdown/runup, directional balance, CUSUM, autocorrelation, oscillation,
+  and directional-run indicators.
+- Add `IndicatorConfig`, `Aggregator`, and `LiveAggregator` as public bounded-analysis extension
+  points.
+- Preserve sample locations for first, latest, minimum, and maximum values without retaining the
+  complete time series.
+
+### Performance
+
+- Bound recent windows, metric series, tensor paths, module-call positions, histogram identities,
+  and distinct error summaries independently of training duration; expose drop counts in live
+  telemetry.
+
+### Documentation
+
+- Rewrite the README, LLM guide, research workflow, examples, and generated `index.md` around
+  single-file live analysis and evidence-constrained interpretation.
+
+### Developers
+
+- Add regressions proving skew detection, linear-drift indicators, oscillation detection, exact
+  fixed-histogram merging, live forward/backward updates, and bounded dynamic-series state.
+
 ## [0.4.0] - 2026-08-14
 
 ### Highlights

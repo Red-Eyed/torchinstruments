@@ -10,8 +10,8 @@ from torchinstruments.records import (
     HistogramRecord,
     ModuleRecord,
     RunRecord,
-    SnapshotRecord,
-    SnapshotState,
+    SampleRecord,
+    SampleState,
     TensorRecord,
 )
 from torchinstruments.sinks.logger import MetricLogger, MetricLoggerSink
@@ -50,7 +50,7 @@ class TensorBoardLogger(MetricLogger, Protocol):
 class TensorBoardSink:
     """Project canonical scalar and histogram records through a TensorBoard logger.
 
-    Snapshot identifiers become dashboard steps because TorchInstruments cannot observe a
+    Sample identifiers become dashboard steps because TorchInstruments cannot observe a
     universal optimizer-step counter. The supplied logger and writer remain caller-owned and are
     never flushed or finalized by this sink.
     """
@@ -67,13 +67,13 @@ class TensorBoardSink:
         self._metric_sink.initialize(run, modules)
         self._initialized = True
 
-    def write_snapshot(self, snapshot: SnapshotRecord) -> None:
+    def observe(self, sample: SampleRecord) -> None:
         """Write scalars and only the newly observed lifecycle stage's histograms."""
         if not self._initialized:
-            raise RuntimeError("sink must be initialized before writing snapshots")
-        self._metric_sink.write_snapshot(snapshot)
+            raise RuntimeError("sink must be initialized before observing samples")
+        self._metric_sink.observe(sample)
         writer = self._logger.experiment
-        for tag, histogram in _snapshot_histograms(snapshot, prefix=self._prefix):
+        for tag, histogram in _sample_histograms(sample, prefix=self._prefix):
             limits, counts = _tensorboard_buckets(histogram)
             writer.add_histogram_raw(
                 tag=tag,
@@ -84,8 +84,8 @@ class TensorBoardSink:
                 sum_squares=histogram.sum_squares,
                 bucket_limits=limits,
                 bucket_counts=counts,
-                global_step=snapshot.snapshot_id,
-                walltime=snapshot.timestamp.timestamp(),
+                global_step=sample.sample_id,
+                walltime=sample.timestamp.timestamp(),
             )
 
     def close(self) -> None:
@@ -94,18 +94,18 @@ class TensorBoardSink:
         self._initialized = False
 
 
-def _snapshot_histograms(
-    snapshot: SnapshotRecord,
+def _sample_histograms(
+    sample: SampleRecord,
     *,
     prefix: str,
 ) -> list[tuple[str, HistogramRecord]]:
     """Flatten histograms added by the current forward or backward lifecycle write."""
     records: list[tuple[str, HistogramRecord]] = []
-    for module_name in sorted(snapshot.modules):
-        for call in snapshot.modules[module_name]:
+    for module_name in sorted(sample.modules):
+        for call in sample.modules[module_name]:
             tensors = (
                 call.outputs
-                if snapshot.state is SnapshotState.FORWARD_COMPLETE
+                if sample.state is SampleState.FORWARD_COMPLETE
                 else call.output_gradients
             )
             records.extend(
