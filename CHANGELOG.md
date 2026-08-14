@@ -2,6 +2,18 @@
 
 All notable changes to TorchInstruments are documented here.
 
+## [0.1.1] - 2026-08-14
+
+### Documentation
+
+- Add a runnable training example that produces forward and output-gradient snapshots.
+- Add a quick start, concrete use cases, monitoring boundaries, configuration recipes, and
+  telemetry interpretation guidance to the project README.
+
+### Developers
+
+- Include runnable examples in Ruff and Pyrefly validation.
+
 ## [0.1.0] - 2026-08-14
 
 ### Highlights

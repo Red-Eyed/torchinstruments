@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "torchinstruments"
-version = "0.1.0"
+version = "0.1.1"
 description = "Passive, trainer-agnostic telemetry for PyTorch models"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -47,7 +47,7 @@ addopts = "-ra"
 testpaths = ["tests"]
 
 [tool.pyrefly]
-project-includes = ["src/**/*.py", "tests/**/*.py"]
+project-includes = ["examples/**/*.py", "src/**/*.py", "tests/**/*.py"]
 search-path = [".", "src"]
 
 [tool.ruff]
