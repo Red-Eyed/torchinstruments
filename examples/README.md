@@ -15,12 +15,13 @@ indicators:
 ```text
 stats/basic-training-a1b2c3d4/
     index.md
-    stats.json
+    report.json
 ```
 
-Open `index.md` first. `stats.json` is updated after each sampled forward and correlated backward;
-no per-sample files are created. Production training can omit `AlwaysSampler()` to restore the
-one-minute default interval.
+Open `index.md` first for ranked research findings and suggested next experiments. `report.json`
+contains the same findings with exact evidence in a deterministic machine-readable schema. Its
+default size is capped at 256,000 bytes; no per-sample or exhaustive live-state files are created.
+Production training can omit `AlwaysSampler()` to restore the one-minute default interval.
 
 ## Lightning, MNIST, and TensorBoard
 
@@ -32,9 +33,10 @@ uv run examples/lightning_mnist.py
 ```
 
 Task loss and validation accuracy appear beside live activation and gradient events in
-TensorBoard. `DirectorySink` independently maintains the canonical bounded `stats.json` with
-distribution and temporal indicators. The default run samples every 25th computational forward
-and collects fixed-range histograms every fourth telemetry sample.
+TensorBoard. `DirectorySink` independently maintains the bounded `report.json` and `index.md`,
+where deterministic rules rank drift, instability, tail growth, and numerical failures. The
+default run samples every 25th computational forward and collects fixed-range histograms every
+fourth telemetry sample.
 
 The observer is attached to `model.network`, the module actually invoked by `training_step()`.
 Lightning does not guarantee that the outer `LightningModule.forward()` is called.

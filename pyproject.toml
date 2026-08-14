@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "torchinstruments"
-version = "0.5.0"
+version = "0.6.0"
 description = "Passive, trainer-agnostic telemetry for PyTorch models"
 readme = "README.md"
 requires-python = ">=3.11"

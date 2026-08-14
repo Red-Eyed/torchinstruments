@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from examples.basic_training import run_demo
-from tests.json_records import read_stats
+from tests.json_records import read_report
 
 
 def test_basic_training_writes_forward_and_backward_telemetry(tmp_path: Path) -> None:
@@ -14,10 +14,9 @@ def test_basic_training_writes_forward_and_backward_telemetry(tmp_path: Path) ->
 
     run_demo(output_dir)
 
-    stats = read_stats(output_dir / "stats.json")
-    assert stats["samples_observed"] == 3
-    assert stats["backward_samples_observed"] == 3
-    assert set(stats["layers"]) == {"0", "1", "2"}
-    assert stats["layers"]["2"][0]["outputs"]["output"]["shape"] == [16, 1]
-    gradients = stats["layers"]["2"][0]["output_gradients"]["grad_output"]
-    assert "rms" in gradients["latest_statistics"]
+    report = read_report(output_dir / "report.json")
+    assert report["coverage"]["samples_observed"] == 3
+    assert report["coverage"]["backward_samples_observed"] == 3
+    assert report["coverage"]["selected_modules"] == 3
+    assert report["coverage"]["tensor_paths"] == 6
+    assert sorted(path.name for path in output_dir.iterdir()) == ["index.md", "report.json"]

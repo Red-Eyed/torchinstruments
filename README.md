@@ -1,14 +1,13 @@
 # TorchInstruments
 
-**Turn “accuracy stalled” into evidence about what changed inside the model.**
+**Turn “accuracy stalled” into a small, evidence-backed list of model problems to investigate.**
 
-A loss curve says that a run is underperforming. It does not say whether gradients started
-collapsing at one layer, activations developed a heavy tail, scale began drifting, or a module
-entered a new unstable regime. TorchInstruments follows those internal signals while training
-continues normally.
+Loss and accuracy curves say that a run changed. TorchInstruments observes selected-module
+activations and output gradients, ranks suspicious internal behavior locally, and writes a bounded
+research report while training continues normally.
 
 ```text
-inject once  →  train normally  →  stats.json updates live  →  ask a narrower question
+inject once  →  train normally  →  read a bounded report  →  run a narrower experiment
 ```
 
 ## Quick start
@@ -20,122 +19,155 @@ inject_observer(model, output_dir="stats")
 train(model)
 ```
 
-There is no telemetry call inside the training loop. Open `stats/index.md`, or tell a
-filesystem-capable LLM:
-
-```text
-Read stats/index.md and stats/stats.json. Find the strongest evidence for activation drift,
-gradient collapse, heavy-tail growth, oscillation, or a regime change. For each finding, give
-the exact layer and indicators, plausible mechanisms, missing evidence, and the smallest
-controlled experiment.
-```
-
-TorchInstruments supports Python 3.11 and newer. Run the complete local example with:
-
-```bash
-git clone https://github.com/Red-Eyed/torchinstruments.git
-cd torchinstruments
-uv sync --dev
-uv run examples/basic_training.py
-```
-
-## What the result looks like
-
-Suppose a modified model stalls below its baseline. TorchInstruments can support a result such as:
-
-> **Observed:** `encoder.blocks.7.proj` output RMS rose from `0.82` to `1.71`. Its fast/slow EMA
-> gap reached `0.083`, linear slope is positive with `R²=0.94`, `p999_abs_to_rms` doubled, and
-> output-gradient RMS fell from `0.0081` to `0.0002` with a large drawdown.
->
-> **What it suggests:** scale and tail growth coincide with weakening gradient flow at block 7.
-> Normalization, residual scaling, or saturation there is more plausible than a model-wide
-> optimizer failure.
->
-> **Next experiment:** restore the previous normalization or residual scale at block 7 only,
-> while holding the seed and data order fixed.
-
-The evidence narrows the hypothesis space. It does not pretend that correlation proves cause.
-
-## More than mean and standard deviation
-
-Two tensor distributions can have the same mean and standard deviation while having completely
-different tails. The default sampled profile therefore includes:
-
-- location and scale: mean, standard deviation, RMS, extrema, mean absolute value, L1/L2 norms;
-- shape: median, quartiles, `p01`–`p999`, skewness, excess kurtosis, and central ranges;
-- tails: `p99_abs`, `p999_abs`, max/RMS ratios, and mass beyond three standard deviations;
-- prevalence: finite, zero, positive, and negative fractions;
-- concentration: normalized magnitude entropy and effective support;
-- optional fixed-bin histograms with explicit underflow, overflow, and non-finite counts.
-
-For important metrics such as RMS, finite fraction, skewness, kurtosis, and tail ratios,
-TorchInstruments maintains technical-analysis-like indicators over sampled forwards:
-
-- fast and slow EMAs plus their absolute and relative gap;
-- momentum over several horizons;
-- linear slope and `R²`;
-- exponentially weighted change and volatility;
-- z-score against prior behavior;
-- drawdown, runup, and historical-range position;
-- directional up/down balance;
-- CUSUM regime-change scores;
-- lag-one autocorrelation, oscillation fraction, and consecutive directional runs.
-
-Every series records its observation count and warm-up state so an LLM can distinguish mature
-evidence from a three-sample coincidence.
-
-## One live file, not thousands of samples
+There is no observer call inside the training loop. The default output is deliberately small:
 
 ```text
 stats/
-    index.md
-    stats.json
+    index.md       # Human-readable findings and analysis prompt
+    report.json    # Typed LLM input, at most 256 KB by default
 ```
 
-`stats.json` is the single canonical telemetry record. It contains run metadata, the module
-catalog, forward and backward layer summaries, current distributions, temporal indicators,
-mergeable histograms, observer overhead, and bounded error summaries. It is atomically replaced
-after sampled forward and backward observations, so readers never see a partial file.
+No database, binary event format, raw tensor, per-sample file, or exhaustive 200 MB JSON document
+is part of the default workflow.
 
-No per-sample files or raw tensors are persisted. First/latest/extreme values retain their sample
-IDs and timestamps. Memory used by temporal windows, metric series, and error identities is
-explicitly bounded.
+## What you get
 
-## What is monitored by default
+Suppose a model modification hurts validation accuracy. The report can provide evidence such as:
+
+> **Gradient scale change #1:** `encoder.blocks.7.proj`, call 0, `grad_output.rms` fell from
+> `0.0081` to `0.0002`. Relative movement, EMA divergence, momentum, and drawdown all rank this
+> path above the other observed gradients. The series has completed warm-up.
+>
+> **Measured interpretation:** gradient scale weakened at this observed boundary.
+>
+> **Next experiment:** restore the previous normalization or residual scale at block 7 only,
+> while preserving seed, data order, and precision.
+
+TorchInstruments narrows the hypothesis space. It does not claim that correlation proves why the
+task metric changed.
+
+## The report is ranked before the LLM sees it
+
+Sending a 200 MB telemetry file to an LLM can cost tens of millions of tokens. TorchInstruments
+therefore performs deterministic searching and ranking in Python. Independent categories include:
+
+- activation-scale drift;
+- output-gradient scale change;
+- heavy-tail and outlier growth;
+- non-finite values;
+- zero-fraction growth;
+- relative volatility;
+- oscillation;
+- CUSUM regime-change evidence.
+
+Each finding contains the exact module, call index, signal, tensor path, metric, first/latest and
+extreme measurements, warm-up status, category-specific ranking basis, and supporting indicators.
+There is no opaque combined health score.
+
+Coverage fields report how many modules, tensor paths, temporal series, and histograms were
+observed; how many findings were returned or omitted; and whether byte or collection limits removed
+evidence.
+
+## Analyze with an LLM
+
+Give the LLM only `stats/index.md` and `stats/report.json`:
+
+```text
+Analyze the ranked TorchInstruments findings in report.json. For every material finding,
+cite the exact category, module, call index, signal, tensor path, metric, values, and evidence.
+Separate measured interpretation from plausible mechanisms. State missing evidence and propose
+the smallest controlled experiment. Treat warmup_complete=false as weak temporal evidence.
+Do not infer losses, labels, optimizer updates, inputs, or parameter gradients that were not
+observed.
+```
+
+The generated `index.md` contains this prompt and a compact human rendering of the strongest
+findings, so the report remains useful without an LLM.
+
+## What is measured
 
 | Boundary | Default behavior |
 | --- | --- |
 | Sampling | First root forward after each 60-second monotonic interval |
-| Modules | Leaf modules, without redundant container outputs |
-| Forward | Every tensor in selected-module outputs, including nested structures |
-| Backward | Gradient with respect to every differentiable selected-module output |
-| Distribution | Rich finite-value shape, tail, prevalence, and concentration statistics |
-| Temporal analysis | Bounded trend, momentum, volatility, regime, and stability indicators |
-| Histograms | Disabled; fixed ranges are recommended for exact live aggregation |
-| Persistence | One strict, atomically updated `stats.json` |
-| Failures | Warn by default and aggregate instrumentation errors in telemetry |
+| Modules | Leaf modules, avoiding redundant container outputs |
+| Forward | Tensor leaves in selected-module outputs |
+| Backward | Gradients with respect to differentiable selected-module outputs |
+| Distribution | Scale, quantiles, skewness, kurtosis, tails, signs, zeros, and entropy |
+| Temporal behavior | EMA, momentum, slope, volatility, extrema, CUSUM, and oscillation |
+| Persistence | Bounded UTF-8 JSON and Markdown reports |
+| Errors | Warn and retain a bounded diagnostic summary |
 
-The current release does not monitor module inputs, `grad_input`, parameters, parameter gradients,
-losses, optimizer state, or optimizer updates. It never calls a sampled parameter change an
-optimizer update.
+The current release does not measure module inputs, `grad_input`, parameters, parameter gradients,
+losses, optimizer state, or optimizer updates.
+
+## Configure the report budget
+
+```python
+from torchinstruments import ReportConfig, inject_observer
+
+inject_observer(
+    model,
+    output_dir="stats",
+    report_config=ReportConfig(
+        max_bytes=128_000,
+        top_k_per_category=10,
+    ),
+)
+```
+
+The byte limit is enforced against the exact indented UTF-8 JSON written to disk. Findings are
+selected round-robin across categories so one diagnostic question cannot consume the entire
+budget. Omitted counts remain visible.
+
+## Distributed training
+
+The default `rank_policy="rank0"` instruments and writes only rank zero. Nonzero ranks register no
+hooks and perform no telemetry reductions or filesystem writes.
+
+When per-rank anomalies matter:
+
+```python
+inject_observer(model, output_dir="stats", rank_policy="all")
+```
+
+Every rank owns human- and LLM-readable files under an isolated directory:
+
+```text
+stats/
+    rank-000/index.md
+    rank-000/report.json
+    rank-001/index.md
+    rank-001/report.json
+```
+
+There are no shared writers, databases, or file locks. After rank reports exist, merge them without
+loading all reports at once:
+
+```python
+from torchinstruments import merge_rank_reports
+
+merge_rank_reports("stats")
+```
+
+This writes bounded `global-report.json` and `global-index.md`. The merged report states which
+ranks were present and whether any source report was truncated. The merger does not introduce a
+distributed barrier or assume every worker has finished.
 
 ## Direct `forward()` calls
 
-Normal PyTorch `module(...)` dispatch uses native hooks. If model code literally invokes
+Normal `module(...)` execution uses native PyTorch hooks. If model code literally calls
 `module.forward(...)`, enable reversible direct-forward capture:
 
 ```python
-inject_observer(model, output_dir="stats", capture_direct_forwards=True)
+inject_observer(model, capture_direct_forwards=True)
 ```
 
-The root and recursively selected modules are wrapped once, so mixed `module(...)` and
-`module.forward(...)` execution is observed exactly once. `remove_observer(model)` restores the
-previous instance attributes.
+The root and recursively selected modules are observed exactly once across mixed invocation
+styles. `remove_observer(model)` restores previous instance attributes.
 
-## Histograms
+## Histograms, TensorBoard, and custom loggers
 
-Histograms are opt-in because they cost more than scalar reductions. Fixed bins are exactly
-mergeable across the run:
+Histograms remain opt-in because they are more expensive than scalar reductions:
 
 ```python
 from torchinstruments import histogram, inject_observer
@@ -152,84 +184,44 @@ inject_observer(
 )
 ```
 
-Dynamic-bin histograms retain their latest distribution, but cannot be merged after their edges
-change. The live JSON records that limitation explicitly.
+`TensorBoardSink` and `MetricLoggerSink` project transient measurements to externally owned
+loggers. The tested Lightning MNIST example uses the same logger for task metrics and internal
+telemetry. Logger ownership remains with the caller.
 
-## Lightning and TensorBoard
+Exhaustive live details are intentionally not written by default. Researchers who explicitly need
+every current tensor path for local debugging can construct
+`DirectorySink("stats", write_full_details=True)`. This creates `details.json`, can become very
+large, and should not be sent wholesale to an LLM.
 
-Use the same externally owned Lightning logger for task metrics and model telemetry:
+## Examples and research workflow
 
-```python
-from lightning.pytorch.loggers import TensorBoardLogger
-
-from torchinstruments import CompositeSink, DirectorySink, TensorBoardSink, inject_observer
-
-logger = TensorBoardLogger(save_dir="logs", name="experiment")
-inject_observer(
-    model.network,
-    sink=CompositeSink(
-        DirectorySink("stats"),
-        TensorBoardSink(logger),
-    ),
-)
+```bash
+git clone https://github.com/Red-Eyed/torchinstruments.git
+cd torchinstruments
+uv sync --dev
+uv run examples/basic_training.py
 ```
 
-TorchInstruments never closes the caller's logger. TensorBoard receives live per-sample events;
-`stats.json` retains bounded online indicators rather than the complete dashboard history. The
-tested [MNIST example](https://github.com/Red-Eyed/torchinstruments/blob/main/examples/lightning_mnist.py)
-demonstrates the complete integration.
-
-## Configure indicator windows
-
-The default path needs no configuration. Research-specific horizons remain explicit at the sink
-boundary:
-
-```python
-from torchinstruments import DirectorySink, IndicatorConfig, LiveAggregator, inject_observer
-
-config = IndicatorConfig(
-    momentum_horizons=(1, 10, 100),
-    recent_window=100,
-    warmup_observations=100,
-)
-sink = DirectorySink("stats", aggregator_factory=lambda: LiveAggregator(config))
-inject_observer(model, sink=sink)
-```
-
-`max_series`, `max_tensor_paths`, `max_module_calls`, `max_histograms`, and
-`max_error_summaries` provide hard bounds for dynamic model structure and error messages. The
-live record counts observations omitted by each structural limit.
-
-## Research and LLM use cases
-
-TorchInstruments helps investigate:
-
-- where gradient signal first weakens or amplifies;
-- whether activation scale is drifting or merely oscillating;
-- whether skew, kurtosis, or extreme-to-RMS ratios are growing;
-- which module first emits non-finite values;
-- whether an architecture change creates a new internal regime;
-- whether rare outliers make a layer quantization-hostile;
-- whether internal behavior is stable enough to redirect investigation toward data, loss, or
-  evaluation.
-
-See the [LLM analysis guide](https://github.com/Red-Eyed/torchinstruments/blob/main/docs/llm-analysis.md)
+The [examples](https://github.com/Red-Eyed/torchinstruments/tree/main/examples) include an ordinary
+training loop and a real Lightning MNIST workflow with TensorBoard. See the
+[LLM analysis guide](https://github.com/Red-Eyed/torchinstruments/blob/main/docs/llm-analysis.md)
 and [research workflows](https://github.com/Red-Eyed/torchinstruments/blob/main/docs/research-workflows.md)
-for evidence-constrained prompts and baseline-versus-candidate experiments.
+for controlled baseline-versus-candidate investigations.
 
 ## Safety and compatibility
 
 - Injection adds no parameters, buffers, or modules; `state_dict()` remains unchanged.
 - Outputs and gradients remain bit-identical in the test suite.
 - Unsampled callbacks perform only a cheap context lookup.
-- Sampled reductions happen on the tensor device; only compact results move to CPU.
-- Raw activations and gradients are never written to disk.
-- Duplicate injection raises `ObserverAlreadyAttachedError`.
-- Python 3.11–3.14 and PyTorch 2.0+ are declared; CUDA, Accelerate, distributed output, and
-  `torch.compile` remain unclaimed until dedicated compatibility tests exist.
+- Raw activations and gradients are never persisted.
+- Report size, finding count, errors, temporal series, tensor paths, calls, and histograms have
+  explicit limits.
+- Python 3.11–3.14 and PyTorch 2.0+ are declared.
+- CUDA-performance, Accelerate, and `torch.compile` support remain unclaimed until dedicated tests
+  exist.
 
 The core wheel depends only on PyTorch and the Python standard library. Lightning, TensorBoard,
-and torchvision are development/example dependencies.
+torchvision, Dirty Equals, Ruff, Pyrefly, and pytest are development/example dependencies.
 
 ## License
 
@@ -245,7 +237,7 @@ If TorchInstruments supports your research or engineering work, cite it as:
   author  = {Vadym Stupakov},
   title   = {TorchInstruments: Passive PyTorch Model Telemetry},
   year    = {2026},
-  version = {0.5.0},
+  version = {0.6.0},
   url     = {https://github.com/Red-Eyed/torchinstruments}
 }
 ```

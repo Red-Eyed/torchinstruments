@@ -11,7 +11,7 @@ import torch
 from torch import nn
 
 from tests.json_records import read_stats
-from torchinstruments import AlwaysSampler, inject_observer, remove_observer
+from torchinstruments import AlwaysSampler, DirectorySink, inject_observer, remove_observer
 
 
 class _InvocationStyle(StrEnum):
@@ -41,6 +41,7 @@ class _MixedInvocationModel(nn.Module):
 @pytest.mark.parametrize("leaf_style", list(_InvocationStyle))
 def test_forward_capture_supports_call_and_forward_exactly_once(
     telemetry_dir: Path,
+    detailed_sink: DirectorySink,
     root_style: _InvocationStyle,
     leaf_style: _InvocationStyle,
 ) -> None:
@@ -57,7 +58,7 @@ def test_forward_capture_supports_call_and_forward_exactly_once(
         observed,
         sampler=AlwaysSampler(),
         capture_direct_forwards=True,
-        output_dir=telemetry_dir,
+        sink=detailed_sink,
         error_policy="raise",
     )
     actual = _invoke(observed, inputs, root_style)
@@ -71,7 +72,7 @@ def test_forward_capture_supports_call_and_forward_exactly_once(
         torch.equal(state_before[name], value) for name, value in observed.state_dict().items()
     )
 
-    stats = read_stats(telemetry_dir / "stats.json")
+    stats = read_stats(telemetry_dir / "details.json")
     assert stats["run"]["collection"]["invocation_capture"] == "forward_wrappers"
     calls = stats["layers"]["linear"]
     assert len(calls) == 1

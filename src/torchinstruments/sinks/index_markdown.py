@@ -1,112 +1,155 @@
-"""Bounded human and LLM guidance for one live telemetry record."""
+"""Human-readable rendering of one bounded research-diagnostic report."""
 
 from __future__ import annotations
 
-import json
 from datetime import UTC
 
-from torchinstruments.records import LiveStatsRecord
+from torchinstruments.reporting.records import (
+    CategoryFindingsRecord,
+    FindingRecord,
+    MergedReportRecord,
+    ReportRecord,
+)
 
 
-def render_run_index(stats: LiveStatsRecord) -> str:
-    """Render a deterministic guide to the canonical live statistics file."""
-    run = stats.run
-    sampling_settings = json.dumps(dict(run.sampling.settings), sort_keys=True)
+def render_run_index(report: ReportRecord) -> str:
+    """Render a compact diagnosis and evidence-constrained LLM prompt."""
+    run = report.run
+    coverage = report.coverage
     created_at = run.created_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    statistic_names = _observed_statistic_names(stats)
-    indicator_names = _observed_indicator_names(stats)
     lines = [
-        "# TorchInstruments live run index",
+        "# TorchInstruments research report",
         "",
-        "> Start here. `stats.json` is the single canonical telemetry record and is updated",
-        "> atomically after sampled forward and backward observations.",
+        "> Human entry point. `report.json` contains the same ranked findings as typed data.",
+        "> No exhaustive per-layer JSON document is written by default.",
         "",
         "## Run overview",
         "",
-        f"- Schema version: `{stats.schema_version}`",
         f"- TorchInstruments version: `{run.observer_version}`",
         f"- PyTorch version: `{run.torch_version}`",
         f"- Created at: `{created_at}`",
-        f"- Sampling policy: `{run.sampling.type}` with settings `{sampling_settings}`",
+        f"- Rank: `{report.rank.rank}` of `{report.rank.world_size}` processes",
+        f"- Sampling policy: `{run.sampling.type}`",
         f"- Invocation capture: `{run.collection.invocation_capture}`",
-        f"- Selected modules: `{len(stats.module_catalog)}`",
-        f"- Momentum horizons: `{list(stats.indicator_configuration.momentum_horizons)}`",
-        f"- Recent indicator window: `{stats.indicator_configuration.recent_window}` observations",
-        f"- Full warm-up floor: `{stats.indicator_configuration.warmup_observations}` observations",
-        f"- Sampled forwards observed: `{stats.samples_observed}`",
-        f"- Correlated backwards observed: `{stats.backward_samples_observed}`",
-        f"- Dropped metric series: `{stats.dropped_series}`",
-        f"- Dropped tensor-path observations: `{stats.dropped_tensor_path_observations}`",
-        f"- Dropped module-call observations: `{stats.dropped_module_call_observations}`",
-        f"- Dropped histogram observations: `{stats.dropped_histogram_observations}`",
-        f"- Dropped error summaries: `{stats.dropped_error_summaries}`",
+        f"- Selected modules: `{coverage.selected_modules}`",
+        f"- Tensor paths summarized locally: `{coverage.tensor_paths}`",
+        f"- Temporal series ranked locally: `{coverage.temporal_series}`",
+        f"- Sampled forwards observed: `{coverage.samples_observed}`",
+        f"- Correlated backwards observed: `{coverage.backward_samples_observed}`",
+        f"- Findings returned: `{coverage.findings_returned}`",
+        f"- Findings omitted: `{coverage.findings_omitted}`",
+        f"- Report byte-budget truncation: `{coverage.report_truncated_by_byte_budget}`",
         "",
-        "## Files",
-        "",
-        "- `stats.json`: run metadata, module catalog, live per-layer indicators, histograms,",
-        "  observer overhead, and bounded error summaries.",
-        "- `index.md`: this derived guide; it contains no additional telemetry.",
-        "",
-        "No per-sample snapshot files are written. Extrema in `stats.json` retain the sample ID",
-        "and timestamp where they occurred.",
-        "",
-        "## Indicators observed so far",
-        "",
-        _render_names("Point-in-time tensor statistics", statistic_names),
-        _render_names("Temporal indicators", indicator_names),
-        "",
-        "Each tensor path separates forward `outputs` from backward `output_gradients`. Shared",
-        "modules retain distinct `call_index` entries. Every scalar series contains first, latest,",
-        "minimum, maximum, count, warm-up state, and bounded trend, momentum, volatility,",
-        "oscillation, autocorrelation, drawdown, runup, and CUSUM indicators.",
-        "",
-        "## Use this run with an LLM",
-        "",
-        "```text",
-        "Read index.md and stats.json. Find layers whose forward distributions or backward",
-        "gradients show scale drift, heavy-tail growth, skew, non-finite values, high volatility,",
-        "persistent momentum, regime change, or collapse from a previous extreme.",
-        "For every finding report: (1) exact module, call index, tensor path, statistic, and",
-        "indicator values; (2) measured interpretation; (3) plausible mechanisms; (4) missing",
-        "evidence; and (5) the smallest controlled experiment. Treat indicators without completed",
-        "warm-up as weak evidence and distinguish measurements from hypotheses.",
-        "```",
-        "",
-        "## Evidence limits",
-        "",
-        "TorchInstruments observes selected-module outputs and their correlated output gradients.",
-        "It does not observe loss, labels, optimizer updates, module inputs, parameters, or",
-        "parameter gradients unless those signals are added separately. Online indicators retain",
-        "bounded distribution and temporal evidence, not the complete historical time series.",
+        "## Ranked findings",
         "",
     ]
+    for category in report.findings:
+        lines.extend(_render_category(category, report))
+    lines.extend(
+        [
+            "## Use this report with an LLM",
+            "",
+            "Give the LLM only `index.md` and `report.json`, then ask:",
+            "",
+            "```text",
+            "Analyze the ranked TorchInstruments findings in report.json. For every material",
+            "finding, cite the exact category, module, call index, signal, tensor path, metric,",
+            "values, and evidence fields. Separate measured interpretation from plausible",
+            "mechanisms. State missing evidence and propose the smallest controlled experiment.",
+            "Treat warmup_complete=false as weak temporal evidence. Do not infer losses, labels,",
+            "optimizer updates, inputs, or parameter gradients that were not observed.",
+            "```",
+            "",
+            "## Evidence limits",
+            "",
+            "TorchInstruments ranks selected-module outputs and correlated output gradients. A",
+            "finding is a measured signature, not a causal diagnosis. `findings_omitted` and the",
+            "drop counters in `report.json` describe evidence excluded by ranking or hard limits.",
+            "",
+        ]
+    )
     return "\n".join(lines)
 
 
-def _observed_statistic_names(stats: LiveStatsRecord) -> frozenset[str]:
-    """Collect scalar statistic names without retaining any measurement values."""
-    names: set[str] = set()
-    for calls in stats.layers.values():
-        for call in calls:
-            for tensors in (call.outputs, call.output_gradients):
-                for tensor in tensors.values():
-                    names.update(tensor.statistics)
-    return frozenset(names)
+def render_merged_index(report: MergedReportRecord) -> str:
+    """Render rank coverage and top global findings from one merged report."""
+    coverage = report.coverage
+    lines = [
+        "# TorchInstruments merged DDP report",
+        "",
+        "> `global-report.json` is the bounded typed source for this human-readable view.",
+        "",
+        "## Rank coverage",
+        "",
+        f"- Expected ranks: `{coverage.expected_ranks}`",
+        f"- Ranks present: `{list(coverage.ranks_present)}`",
+        f"- Complete rank coverage: `{coverage.rank_coverage_complete}`",
+        f"- Source reports truncated: `{coverage.source_reports_truncated}`",
+        f"- Global findings returned: `{coverage.findings_returned}`",
+        f"- Findings omitted after ranking: `{coverage.findings_omitted_after_global_ranking}`",
+        f"- Byte-budget truncation: `{coverage.report_truncated_by_byte_budget}`",
+        "",
+        "## Ranked findings across ranks",
+        "",
+    ]
+    for category in report.findings:
+        lines.append(f"### {category.category.value.replace('_', ' ').title()}")
+        lines.append("")
+        for finding in category.findings[
+            : report.report_configuration.markdown_findings_per_category
+        ]:
+            module = finding.module or "@root"
+            lines.append(
+                f"- Rank `{finding.source_rank}`, #{finding.rank}: `{module}` "
+                f"`{finding.signal}.{finding.tensor_path}.{finding.metric}`; "
+                f"score `{finding.ranking_score:.6g}`."
+            )
+        if not category.findings:
+            lines.append("No retained finding.")
+        lines.append("")
+    lines.extend(
+        [
+            "## Interpretation",
+            "",
+            "Use `global-report.json` as the LLM input. If rank coverage is incomplete or any",
+            "source report was truncated, state that limitation before comparing ranks.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
 
 
-def _observed_indicator_names(stats: LiveStatsRecord) -> frozenset[str]:
-    """Collect temporal indicator names from the first available scalar series."""
-    for calls in stats.layers.values():
-        for call in calls:
-            for tensors in (call.outputs, call.output_gradients):
-                for tensor in tensors.values():
-                    for series in tensor.statistics.values():
-                        return frozenset(series.indicators)
-    return frozenset()
+def _render_category(category: CategoryFindingsRecord, report: ReportRecord) -> list[str]:
+    """Render a bounded number of findings from one independent category."""
+    lines = [f"### {category.category.value.replace('_', ' ').title()}", ""]
+    limit = report.report_configuration.markdown_findings_per_category
+    if not category.findings:
+        lines.extend(["No positive-scoring finding is currently retained.", ""])
+        return lines
+    for finding in category.findings[:limit]:
+        lines.extend(_render_finding(finding))
+    if len(category.findings) > limit:
+        lines.extend(
+            [
+                f"{len(category.findings) - limit} additional finding(s) remain in `report.json`.",
+                "",
+            ]
+        )
+    return lines
 
 
-def _render_names(label: str, names: frozenset[str]) -> str:
-    """Render a sorted bounded name list or an explicit empty state."""
-    if not names:
-        return f"- {label}: none observed yet"
-    return f"- {label}: " + ", ".join(f"`{name}`" for name in sorted(names))
+def _render_finding(finding: FindingRecord) -> list[str]:
+    """Render one exact observation without turning its interpretation into causality."""
+    module = finding.module or "@root"
+    evidence = ", ".join(f"`{item.name}={item.value:.6g}`" for item in finding.evidence)
+    return [
+        (
+            f"- **#{finding.rank} `{module}` call `{finding.call_index}`** — "
+            f"`{finding.signal}.{finding.tensor_path}.{finding.metric}`; "
+            f"first `{finding.first.value:.6g}`, latest `{finding.latest.value:.6g}`, "
+            f"score `{finding.ranking_score:.6g}`."
+        ),
+        f"  Evidence: {evidence or 'first/latest values only'}.",
+        f"  Interpretation: {finding.interpretation}",
+        "",
+    ]

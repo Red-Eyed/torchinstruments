@@ -17,12 +17,12 @@ def test_index_exists_before_the_first_sample(telemetry_dir: Path) -> None:
     inject_observer(model, sampler=AlwaysSampler(), output_dir=telemetry_dir)
 
     index = (telemetry_dir / "index.md").read_text(encoding="utf-8")
-    assert "# TorchInstruments live run index" in index
+    assert "# TorchInstruments research report" in index
     assert "- Sampled forwards observed: `0`" in index
     assert "- Correlated backwards observed: `0`" in index
     assert "- Invocation capture: `pytorch_hooks`" in index
-    assert "stats.json" in index
-    assert "No per-sample snapshot files are written" in index
+    assert "report.json" in index
+    assert "No exhaustive per-layer JSON document" in index
     remove_observer(model)
 
 
@@ -38,15 +38,15 @@ def test_index_tracks_observed_scalars_histograms_and_backward(telemetry_dir: Pa
         output_dir=telemetry_dir,
     )
 
-    output = model(torch.tensor([-1.0, 0.0, 1.0], requires_grad=True))
+    output = model(torch.tensor([-1.0, float("nan"), 1.0], requires_grad=True))
     output.sum().backward()
 
     index = (telemetry_dir / "index.md").read_text(encoding="utf-8")
     assert "- Sampled forwards observed: `1`" in index
     assert "- Correlated backwards observed: `1`" in index
-    assert "`finite_fraction`" in index
-    assert "`cusum_change_score`" in index
-    assert "does not observe loss" in index
+    assert "### Nonfinite Values" in index
+    assert "`latest_nonfinite_fraction=" in index
+    assert "Do not infer losses" in index
     remove_observer(model)
 
 
@@ -60,5 +60,5 @@ def test_index_remains_bounded_as_live_samples_accumulate(telemetry_dir: Path) -
 
     index = (telemetry_dir / "index.md").read_text(encoding="utf-8")
     assert "- Sampled forwards observed: `20`" in index
-    assert len(index) < 5_000
+    assert len(index) < 10_000
     remove_observer(model)

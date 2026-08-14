@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import TypeAlias, TypedDict, cast
+
+
+class JsonAbsent(TypedDict):
+    """Describe one serialized reason-carrying unavailable value."""
+
+    status: str
+    reason: str
 
 
 class JsonHistogramRecord(TypedDict):
@@ -28,7 +35,7 @@ class JsonErrorRecord(TypedDict):
     count: int
     first_timestamp: str
     latest_timestamp: str
-    module: str | dict[str, str]
+    module: str | JsonAbsent
     probe: str
     exception_type: str
     message: str
@@ -99,7 +106,7 @@ class JsonHistogramSummary(TypedDict):
 
     samples: int
     latest: JsonHistogramRecord
-    aggregate: JsonHistogramRecord | dict[str, str]
+    aggregate: JsonHistogramRecord | JsonAbsent
 
 
 class JsonLiveTensorRecord(TypedDict):
@@ -164,8 +171,140 @@ class JsonLiveStatsRecord(TypedDict):
     dropped_error_summaries: int
 
 
+class JsonEvidenceValue(TypedDict):
+    """Describe one explicitly named scalar supporting a ranked finding."""
+
+    name: str
+    value: float | int
+
+
+class JsonFinding(TypedDict):
+    """Describe one bounded diagnostic finding consumed by behavior tests."""
+
+    category: str
+    rank: int
+    ranking_score: float
+    ranking_basis: str
+    source_rank: int
+    module: str
+    module_type: str
+    call_index: int
+    signal: str
+    tensor_path: str
+    metric: str
+    observations: int
+    warmup_complete: bool
+    first: JsonMetricPoint
+    latest: JsonMetricPoint
+    minimum: JsonMetricPoint
+    maximum: JsonMetricPoint
+    evidence: list[JsonEvidenceValue]
+    interpretation: str
+
+
+class JsonCategoryFindings(TypedDict):
+    """Describe one independently ranked diagnostic category."""
+
+    category: str
+    findings: list[JsonFinding]
+
+
+class JsonCategoryCount(TypedDict):
+    """Describe the complete number of candidates in one category."""
+
+    category: str
+    count: int
+
+
+class JsonRankRecord(TypedDict):
+    """Describe report ownership for one distributed process."""
+
+    rank: int
+    world_size: int
+
+
+class JsonReportConfiguration(TypedDict):
+    """Describe exact report size and selection limits."""
+
+    max_bytes: int
+    top_k_per_category: int
+    markdown_findings_per_category: int
+    max_errors: int
+    max_error_message_chars: int
+
+
+class JsonReportCoverage(TypedDict):
+    """Describe measured and omitted evidence in one bounded report."""
+
+    selected_modules: int
+    tensor_paths: int
+    temporal_series: int
+    histograms: int
+    samples_observed: int
+    backward_samples_observed: int
+    candidates_by_category: list[JsonCategoryCount]
+    findings_returned: int
+    findings_omitted: int
+    errors_returned: int
+    errors_omitted: int
+    report_truncated_by_byte_budget: bool
+    dropped_series: int
+    dropped_tensor_path_observations: int
+    dropped_module_call_observations: int
+    dropped_histogram_observations: int
+    dropped_error_summaries: int
+
+
+class JsonReportRecord(TypedDict):
+    """Describe the complete bounded report schema consumed by tests."""
+
+    report_schema_version: int
+    telemetry_schema_version: int
+    updated_at: str
+    run: JsonRunRecord
+    rank: JsonRankRecord
+    report_configuration: JsonReportConfiguration
+    indicator_configuration: JsonIndicatorConfiguration
+    coverage: JsonReportCoverage
+    findings: list[JsonCategoryFindings]
+    errors: list[JsonErrorRecord]
+
+
+class JsonMergedCoverage(TypedDict):
+    """Describe completeness and selection for a merged DDP report."""
+
+    expected_ranks: int
+    ranks_present: list[int]
+    rank_coverage_complete: bool
+    source_reports_truncated: int
+    findings_returned: int
+    findings_omitted_after_global_ranking: int
+    report_truncated_by_byte_budget: bool
+
+
+class JsonMergedReportRecord(TypedDict):
+    """Describe the bounded report produced from independent rank reports."""
+
+    report_schema_version: int
+    updated_at: str
+    report_configuration: JsonReportConfiguration
+    coverage: JsonMergedCoverage
+    findings: list[JsonCategoryFindings]
+
+
+JsonDocument: TypeAlias = JsonLiveStatsRecord | JsonReportRecord | JsonMergedReportRecord
+
+
+def require_histogram(value: JsonHistogramRecord | JsonAbsent) -> JsonHistogramRecord:
+    """Narrow an available aggregate histogram or fail with its absence reason."""
+    if "status" in value:
+        absent = cast(JsonAbsent, value)
+        raise AssertionError(f"expected histogram data, got {absent['reason']}")
+    return cast(JsonHistogramRecord, value)
+
+
 def read_stats(path: Path) -> JsonLiveStatsRecord:
-    """Parse the canonical live file after validating its required boundaries."""
+    """Parse explicitly enabled live details after validating required boundaries."""
     value = _read_object(path)
     required = {
         "schema_version",
@@ -189,10 +328,45 @@ def read_stats(path: Path) -> JsonLiveStatsRecord:
     return cast(JsonLiveStatsRecord, value)
 
 
-def _read_object(path: Path) -> dict[str, object]:
+def read_report(path: Path) -> JsonReportRecord:
+    """Parse the bounded LLM report after validating its typed top-level boundary."""
+    value = _read_object(path)
+    required = {
+        "report_schema_version",
+        "telemetry_schema_version",
+        "updated_at",
+        "run",
+        "rank",
+        "report_configuration",
+        "indicator_configuration",
+        "coverage",
+        "findings",
+        "errors",
+    }
+    if not required.issubset(value):
+        raise ValueError(f"report is missing fields: {sorted(required - value.keys())}")
+    return cast(JsonReportRecord, value)
+
+
+def read_merged_report(path: Path) -> JsonMergedReportRecord:
+    """Parse a merged rank report after validating its typed top-level boundary."""
+    value = _read_object(path)
+    required = {
+        "report_schema_version",
+        "updated_at",
+        "report_configuration",
+        "coverage",
+        "findings",
+    }
+    if not required.issubset(value):
+        raise ValueError(f"merged report is missing fields: {sorted(required - value.keys())}")
+    return cast(JsonMergedReportRecord, value)
+
+
+def _read_object(path: Path) -> JsonDocument:
     """Read one JSON object and reject non-object roots at the test boundary."""
     with path.open(encoding="utf-8") as file:
         value = json.load(file)
     if not isinstance(value, dict):
         raise TypeError(f"expected a JSON object in {path}")
-    return value
+    return cast(JsonDocument, value)

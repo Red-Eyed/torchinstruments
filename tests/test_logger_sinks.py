@@ -164,7 +164,7 @@ def test_composite_sink_preserves_live_json_and_logger_outputs(telemetry_dir: Pa
     logger = _RecordingLogger()
     model = nn.Linear(4, 1)
     sink = CompositeSink(
-        DirectorySink(telemetry_dir),
+        DirectorySink(telemetry_dir, write_full_details=True),
         MetricLoggerSink(logger, prefix="research/telemetry"),
     )
     inject_observer(model, sampler=AlwaysSampler(), sink=sink, error_policy="raise")
@@ -172,7 +172,7 @@ def test_composite_sink_preserves_live_json_and_logger_outputs(telemetry_dir: Pa
     model(torch.ones(2, 4)).sum().backward()
     remove_observer(model)
 
-    stats = read_stats(telemetry_dir / "stats.json")
+    stats = read_stats(telemetry_dir / "details.json")
     assert stats["backward_samples_observed"] == 1
     assert len(logger.events) == 2
     assert any(name.startswith("research/telemetry/") for name in logger.events[0].metrics)
@@ -187,13 +187,16 @@ def test_composite_sink_requires_a_destination() -> None:
 def test_composite_sink_attempts_json_after_another_sink_fails(telemetry_dir: Path) -> None:
     """Preserve canonical output when an earlier dashboard destination fails."""
     model = nn.Identity()
-    sink = CompositeSink(_FailingWriteSink(), DirectorySink(telemetry_dir))
+    sink = CompositeSink(
+        _FailingWriteSink(),
+        DirectorySink(telemetry_dir, write_full_details=True),
+    )
     inject_observer(model, sampler=AlwaysSampler(), sink=sink, error_policy="ignore")
 
     model(torch.ones(1))
     remove_observer(model)
 
-    stats = read_stats(telemetry_dir / "stats.json")
+    stats = read_stats(telemetry_dir / "details.json")
     assert stats["samples_observed"] == 1
 
 
@@ -203,12 +206,12 @@ def test_metric_logger_sink_requires_a_non_empty_prefix() -> None:
         MetricLoggerSink(_RecordingLogger(), prefix=" / ")
 
 
-def test_tensorboard_histogram_is_derived_from_canonical_json(telemetry_dir: Path) -> None:
-    """Project the exact JSON histogram moments and counts without a raw tensor."""
+def test_tensorboard_histogram_matches_explicit_json_details(telemetry_dir: Path) -> None:
+    """Match dashboard histograms to normalized records preserved in JSON details."""
     logger = _RecordingTensorBoardLogger()
     model = nn.Identity()
     sink = CompositeSink(
-        DirectorySink(telemetry_dir),
+        DirectorySink(telemetry_dir, write_full_details=True),
         TensorBoardSink(logger),
     )
     inject_observer(
@@ -224,7 +227,7 @@ def test_tensorboard_histogram_is_derived_from_canonical_json(telemetry_dir: Pat
     model(torch.tensor([-2.0, -1.0, 0.0, 1.0, 2.0]))
     remove_observer(model)
 
-    stats = read_stats(telemetry_dir / "stats.json")
+    stats = read_stats(telemetry_dir / "details.json")
     output = stats["layers"][""][0]["outputs"]["output"]
     json_record = output["histograms"]["distribution"]["latest"]
     event = logger.experiment.events[0]

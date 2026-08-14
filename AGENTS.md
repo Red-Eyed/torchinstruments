@@ -6,15 +6,19 @@ This file provides guidance to Codex when working with code in this repository.
 
 TorchInstruments passively collects compact telemetry from arbitrary PyTorch models. A user
 injects an observer once, runs an otherwise unchanged training or inference loop, and receives
-one atomically updated live JSON record without trainer-specific integration.
+one bounded research report without trainer-specific integration.
 
 Key terms:
 
 - **Root forward**: one invocation of the model passed to `inject_observer()`. It is the sampling
   unit; it is deliberately not called a training step.
 - **Sample event**: a transient forward or backward record delivered to sinks and then discarded.
-- **Live statistics**: bounded per-layer distributions and temporal indicators accumulated across
-  sample events in `stats.json`.
+- **Live statistics**: bounded in-memory distributions and temporal indicators accumulated across
+  sample events before local diagnostic ranking.
+- **Finding rule**: an independent callable that turns one typed temporal series into either no
+  candidate or one category-specific candidate with exact evidence.
+- **Report configuration**: limits category top-K, errors, Markdown detail, and the exact UTF-8
+  byte size of the JSON report.
 - **Module call**: one invocation position of a selected module. One module may have
   several calls because modules can be shared or reused.
 - **Sampling policy**: a callable object that decides whether a root forward is sampled.
@@ -35,10 +39,11 @@ Key terms:
 - **Absent**: a typed record carrying the reason a canonical value is unavailable; it replaces
   unexplained nulls in telemetry records.
 
-The canonical telemetry artifact is strict UTF-8 `stats.json`. A run directory also contains a
-derived, bounded `index.md` for human and LLM discovery. The live JSON and index use atomic
-filesystem replacement; JSON rejects NaN or infinity during serialization. No sampled-forward
-files are persisted.
+The canonical artifacts are strict UTF-8 `report.json` and a compact `index.md`. They contain
+ranked findings, exact evidence, and coverage within a configured byte budget. Both use atomic
+filesystem replacement; JSON rejects NaN or infinity. `details.json` is an explicitly enabled,
+potentially large debugging artifact, never the default LLM input. No sampled-forward files are
+persisted.
 
 ## Development Commands
 
@@ -78,6 +83,10 @@ Core abstractions are structural `Protocol` types:
 - `CallCapture` in `capture.py` attaches native hooks or reversible forward wrappers.
 - `Aggregator` in `aggregation/base.py` folds transient events into bounded live records.
 - `LiveAggregator` in `aggregation/live.py` calculates distribution and temporal indicators.
+- `FindingRule` in `reporting/rules.py` evaluates one series independently.
+- `build_report()` in `reporting/builder.py` performs deterministic category ranking under an
+  exact byte budget.
+- Frozen records and NamedTuples in `reporting/records.py` define the persisted report schema.
 - `ModuleSelector` in `selectors/base.py` selects module objects during attachment.
 - `Reducer` in `reducers/base.py` produces named scalar reductions without inheritance.
 - `HistogramReducer` in `reducers/histograms.py` produces independently sampled distributions.
@@ -85,6 +94,10 @@ Core abstractions are structural `Protocol` types:
 - `MetricLoggerSink` projects only scalar statistics; `TensorBoardSink` derives scalars and
   histograms from the same records that `DirectorySink` serializes.
 - Frozen dataclasses in `records.py` define transient and live schemas before serialization.
+
+`rank_policy="rank0"` attaches no hooks on nonzero ranks. `rank_policy="all"` writes only to
+rank-private directories. `merge_rank_reports()` streams bounded rank reports without sharing a
+writer, lock, database, or distributed barrier.
 
 The observer is intentionally attached as a plain private Python attribute. Never register it as
 an `nn.Module`, parameter, or buffer, because injection must leave `state_dict()` unchanged.
@@ -99,14 +112,19 @@ an `nn.Module`, parameter, or buffer, because injection must leave `state_dict()
   persisted records hold only compact CPU-native values.
 - Use `datetime` for timestamps and monotonic floating-point seconds only for interval decisions.
   Convert UTC timestamps to ISO text solely in the JSON adapter.
-- Known record shapes are frozen dataclasses or typed structures, not bare dictionaries. Dynamic
-  metric maps are allowed because reducer names are extension-defined.
+- Known record shapes are frozen dataclasses, NamedTuples, or TypedDicts, never bare dictionaries.
+  Typed homogeneous lookup tables are allowed when keys are genuinely dynamic, such as
+  extension-defined reducer names.
 - Preserve unexplained absence as an `Absent` value or an `unavailable_stats` reason. Do not emit
   bare JSON nulls or non-standard NaN/Infinity tokens.
 - Built-in statistics operate on finite values and report `finite_fraction` against the original
   tensor. Standard deviation, skewness, and kurtosis use population moments.
 - Temporal windows, metric series, tensor paths, call positions, histogram identities, and error
   identities must remain explicitly bounded.
+- Default persisted reports must honor their exact serialized UTF-8 byte budget. Keep findings
+  ranked independently by category and never invent a cross-category health score.
+- Distributed workers must not share writers, locks, temporary files, or databases. Preserve rank
+  identity and report incomplete rank coverage explicitly.
 - Histogram JSON must contain every bin, outlier count, and compact moment required to replay the
   TensorBoard event. A dashboard adapter must never recompute from or receive raw tensors.
 - Capture callbacks must return without replacing module output or gradients. Forward wrappers

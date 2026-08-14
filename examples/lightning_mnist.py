@@ -149,8 +149,8 @@ def run_training(
 ) -> Path:
     """Train with one logger shared by Lightning and TorchInstruments.
 
-    The returned path contains TensorBoard event files. The same live scalar and histogram
-    evidence remains in ``config.telemetry_dir / "stats.json"``.
+    The returned path contains TensorBoard event files. Ranked evidence from the same normalized
+    measurements remains in ``index.md`` and ``report.json`` under the telemetry directory.
     """
     L.seed_everything(7, workers=True)
     model = MnistClassifier()

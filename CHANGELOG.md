@@ -2,6 +2,55 @@
 
 All notable changes to TorchInstruments are documented here.
 
+## [0.6.0] - 2026-08-14
+
+### Highlights
+
+- Replace the default exhaustive live-state file with byte-bounded `report.json` and `index.md`
+  artifacts containing category-ranked research findings and exact supporting evidence.
+- Add multiprocess-safe distributed ownership without a database, shared writer, lock, or barrier.
+
+### Backwards Incompatible Changes
+
+#### Default storage
+
+`DirectorySink` no longer writes `stats.json` by default. Consumers read the typed `report.json`
+schema, which contains selected top findings rather than every live series. Complete live state is
+available only through explicit `DirectorySink(..., write_full_details=True)` as `details.json`.
+
+#### Distributed default
+
+`inject_observer()` now defaults to `rank_policy="rank0"`. A detected nonzero rank registers no
+hooks and writes no files. Use `rank_policy="all"` to instrument every worker in isolated rank
+directories.
+
+### New Features
+
+- Add `ReportConfig` with an exact default 256,000-byte JSON budget and per-category top-K limits.
+- Add independent rules for activation-scale drift, gradient-scale change, heavy-tail growth,
+  non-finite values, zero-fraction growth, volatility, oscillation, and regime changes.
+- Preserve first, latest, minimum, and maximum points plus named evidence in every typed finding.
+- Add `merge_rank_reports()` to stream rank-local reports into bounded `global-report.json` and
+  `global-index.md` while recording rank completeness and source truncation.
+
+### Performance
+
+- Prevent large model telemetry from becoming an unbounded persisted document or costly default
+  LLM input.
+- Avoid all observer hook and reduction overhead on nonzero ranks under the default rank policy.
+
+### Documentation
+
+- Rewrite the README, LLM guide, design, research workflows, and examples around ranked outcomes,
+  coverage limits, controlled experiments, and distributed analysis.
+
+### Developers
+
+- Define persisted report records with frozen dataclasses and NamedTuples and parse external JSON
+  through TypedDict boundaries.
+- Add regressions for exact byte budgets, deterministic evidence, rank isolation, rank-zero
+  disabling, and bounded global merging.
+
 ## [0.5.0] - 2026-08-14
 
 ### Highlights

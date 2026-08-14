@@ -13,6 +13,7 @@ from torch import nn
 from tests.json_records import read_stats
 from torchinstruments import (
     AlwaysSampler,
+    DirectorySink,
     ObserverAlreadyAttachedError,
     has_observer,
     inject_observer,
@@ -97,31 +98,33 @@ def test_duplicate_injection_is_rejected(
 def test_remove_observer_stops_future_collection(
     linear_model: nn.Linear,
     telemetry_dir: Path,
+    detailed_sink: DirectorySink,
 ) -> None:
     """Stop updating live statistics after explicit observer removal."""
-    inject_observer(linear_model, sampler=AlwaysSampler(), output_dir=telemetry_dir)
+    inject_observer(linear_model, sampler=AlwaysSampler(), sink=detailed_sink)
     linear_model(torch.randn(1, 4))
     remove_observer(linear_model)
 
     linear_model(torch.randn(1, 4))
 
     assert not has_observer(linear_model)
-    stats = read_stats(telemetry_dir / "stats.json")
+    stats = read_stats(telemetry_dir / "details.json")
     assert stats["samples_observed"] == 1
 
 
 def test_remove_observer_detaches_pending_gradient_hooks(
     linear_model: nn.Linear,
     telemetry_dir: Path,
+    detailed_sink: DirectorySink,
 ) -> None:
     """Prevent pending graph callbacks from writing after observer removal."""
-    inject_observer(linear_model, sampler=AlwaysSampler(), output_dir=telemetry_dir)
+    inject_observer(linear_model, sampler=AlwaysSampler(), sink=detailed_sink)
     output = linear_model(torch.randn(1, 4))
     remove_observer(linear_model)
 
     output.sum().backward()
 
-    stats = read_stats(telemetry_dir / "stats.json")
+    stats = read_stats(telemetry_dir / "details.json")
     assert stats["samples_observed"] == 1
     assert stats["backward_samples_observed"] == 0
 
@@ -146,6 +149,7 @@ class _NeverSampler:
 def test_inactive_hooks_do_not_call_reducers(
     linear_model: nn.Linear,
     telemetry_dir: Path,
+    detailed_sink: DirectorySink,
 ) -> None:
     """Avoid invoking reducers from selected-module hooks outside sampled forwards."""
     calls = 0
@@ -161,14 +165,14 @@ def test_inactive_hooks_do_not_call_reducers(
         linear_model,
         sampler=_NeverSampler(),
         reducers=[counting_reducer],
-        output_dir=telemetry_dir,
+        sink=detailed_sink,
     )
 
     for _ in range(20):
         linear_model(torch.randn(1, 4))
 
     assert calls == 0
-    stats = read_stats(telemetry_dir / "stats.json")
+    stats = read_stats(telemetry_dir / "details.json")
     assert stats["samples_observed"] == 0
     remove_observer(linear_model)
 
@@ -176,13 +180,14 @@ def test_inactive_hooks_do_not_call_reducers(
 def test_forward_only_execution_updates_live_forward_statistics(
     linear_model: nn.Linear,
     telemetry_dir: Path,
+    detailed_sink: DirectorySink,
 ) -> None:
     """Persist live forward telemetry even when no backward pass follows."""
-    inject_observer(linear_model, sampler=AlwaysSampler(), output_dir=telemetry_dir)
+    inject_observer(linear_model, sampler=AlwaysSampler(), sink=detailed_sink)
 
     linear_model(torch.randn(2, 4))
 
-    stats = read_stats(telemetry_dir / "stats.json")
+    stats = read_stats(telemetry_dir / "details.json")
     assert stats["samples_observed"] == 1
     assert stats["backward_samples_observed"] == 0
     assert stats["layers"][""][0]["outputs"]["output"]["shape"] == [2, 3]

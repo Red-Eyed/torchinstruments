@@ -10,6 +10,13 @@ from pathlib import Path
 from torch import nn
 
 from torchinstruments.capture import ForwardCallCapture, HookCallCapture
+from torchinstruments.distributed import (
+    RankInfo,
+    RankPolicy,
+    detect_rank,
+    parse_rank_policy,
+    rank_is_enabled,
+)
 from torchinstruments.errors import (
     ErrorPolicy,
     ObserverAlreadyAttachedError,
@@ -17,6 +24,7 @@ from torchinstruments.errors import (
 )
 from torchinstruments.observer import Observer
 from torchinstruments.reducers import HistogramReducer, Reducer, default_reducers
+from torchinstruments.reporting import ReportConfig
 from torchinstruments.sampling import SamplingPolicy, TimedSampler
 from torchinstruments.selectors import ModuleSelector, leaf_modules
 from torchinstruments.sinks import DirectorySink, Sink
@@ -45,6 +53,8 @@ def inject_observer(
     reducers: Sequence[Reducer] | _UseDefault = _USE_DEFAULT,
     histograms: Sequence[HistogramReducer] = (),
     sink: Sink | _UseDefault = _USE_DEFAULT,
+    report_config: ReportConfig | _UseDefault = _USE_DEFAULT,
+    rank_policy: RankPolicy | str = RankPolicy.RANK0,
     error_policy: ErrorPolicy | str = ErrorPolicy.WARN,
     capture_direct_forwards: bool = False,
 ) -> None:
@@ -53,8 +63,11 @@ def inject_observer(
     Convenience arguments are mutually exclusive with their corresponding injected component:
     ``interval`` with ``sampler``, and ``output_dir`` with ``sink``. ``histograms`` is empty by
     default because distribution reduction is more expensive than scalar diagnostics; each
-    configured histogram owns an independent sample cadence. Collection errors follow
-    ``error_policy``. By default, native PyTorch hooks observe normal ``module(...)`` dispatch.
+    configured histogram owns an independent sample cadence. ``report_config`` controls the
+    bounded default directory report and cannot be combined with a custom ``sink``. Distributed
+    runs instrument only rank zero unless ``rank_policy="all"`` is selected. Collection errors
+    follow ``error_policy``. By default, native PyTorch hooks observe normal ``module(...)``
+    dispatch.
     Set ``capture_direct_forwards=True`` when model code invokes literal ``module.forward(...)``;
     this replaces selected modules' instance-level ``forward`` attributes until
     :func:`remove_observer` restores them. Successful attachment returns ``None``.
@@ -62,10 +75,21 @@ def inject_observer(
     if hasattr(model, _OBSERVER_ATTRIBUTE):
         raise ObserverAlreadyAttachedError("model already has a TorchInstruments observer")
 
+    resolved_rank_policy = parse_rank_policy(rank_policy)
+    rank = detect_rank()
+    if not rank_is_enabled(resolved_rank_policy, rank):
+        return
+
     resolved_sampler = _resolve_sampler(interval, sampler)
     resolved_selector = leaf_modules() if selector is _USE_DEFAULT else selector
     resolved_reducers = default_reducers() if reducers is _USE_DEFAULT else tuple(reducers)
-    resolved_sink = _resolve_sink(output_dir, sink)
+    resolved_sink = _resolve_sink(
+        output_dir,
+        sink,
+        report_config=report_config,
+        rank=rank,
+        rank_policy=resolved_rank_policy,
+    )
     capture = ForwardCallCapture() if capture_direct_forwards else HookCallCapture()
 
     observer = Observer(
@@ -113,10 +137,25 @@ def _resolve_sampler(
     return sampler
 
 
-def _resolve_sink(output_dir: str | Path, sink: Sink | _UseDefault) -> Sink:
+def _resolve_sink(
+    output_dir: str | Path,
+    sink: Sink | _UseDefault,
+    *,
+    report_config: ReportConfig | _UseDefault,
+    rank: RankInfo,
+    rank_policy: RankPolicy,
+) -> Sink:
     """Resolve the persistence sink and reject ambiguous output configuration."""
     if sink is _USE_DEFAULT:
-        return DirectorySink(output_dir)
+        resolved_report = ReportConfig() if report_config is _USE_DEFAULT else report_config
+        return DirectorySink(
+            output_dir,
+            report_config=resolved_report,
+            rank=rank,
+            isolate_rank=rank.is_distributed and rank_policy is RankPolicy.ALL,
+        )
     if Path(output_dir) != _DEFAULT_OUTPUT_DIR:
         raise ValueError("output_dir and sink cannot be configured together")
+    if report_config is not _USE_DEFAULT:
+        raise ValueError("report_config and sink cannot be configured together")
     return sink

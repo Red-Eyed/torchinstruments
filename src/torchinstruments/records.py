@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TypeAlias
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True)
