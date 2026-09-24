@@ -6,7 +6,7 @@ layer records, not a list of diagnosed problems.
 
 1. Check observation counts and unavailable reasons. An unexecuted layer or missing backward is
    not a healthy measurement. During training the summary is only a catalog; query live chunks.
-2. Inspect per-layer first/latest values, extrema, and previous/recent windows. Compare like
+2. Inspect per-layer history distributions and previous/recent window means. Compare like
    signals, tensor paths, shapes, and call indices. Keep distributed ranks distinct.
 3. Use Polars to filter `history.parquet` to the relevant measurements. During training or after
    a crash, query `history.parts/*.parquet`. Sort by sample ID, not arrival order.

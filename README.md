@@ -89,9 +89,12 @@ While training, scan `stats/history.parts/*.parquet` instead. Always order trend
 backward events may arrive in a different order from their forwards.
 
 `result.json` is an array of layer records. Each tensor contains metric summaries with observation
-counts, first/latest values, finite extrema and their sample IDs, and two adjacent windows.
-Window means average sample statistics, **not pooled tensor distributions**: averaging batch
-medians does not produce the median of all tensor entries. Read each window's actual/valid counts.
+counts, whole-history mean, population std, min/max, and linearly interpolated quartiles.
+`statistics` is keyed by metric name. Each metric also has previous/recent window means.
+Aggregates give each available sample statistic equal weight; they are **not pooled tensor
+distributions**. For example, `statistics.mean.p50` is the median of sampled tensor means.
+Unavailable values are counted and excluded from numeric aggregates; null aggregates carry
+an explanation. Exact samples, timestamps, and missing-value reasons stay in Parquet.
 All selected layers are listed, including unexecuted layers; there is no byte-budget selection.
 
 ## Find a problem, then test a fix

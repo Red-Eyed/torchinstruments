@@ -174,12 +174,19 @@ These are tensor-wide statistics, not per-channel statistics.
 
 `result.json` is an array of layer records. Within each layer, tensors are separated
 by call, signal, and tensor path.
-Each metric has first/latest points and finite minimum/maximum points with sample IDs.
+`statistics` maps metric names to whole-history aggregates: observations, unavailable
+count, mean, population std, min, max, and linearly interpolated p25/p50/p75.
+Each observation has equal weight; unavailable values are excluded from numeric aggregates.
+These summarize sampled statistics: for example statistics.mean.p50 is the median of
+sampled tensor means, NOT the median of pooled tensor entries.
+previous_window_mean and recent_window_mean compare adjacent windows ordered by sample ID.
 The recent window contains at most {window} observations; the previous window contains
-up to {window} preceding observations. Each window reports its actual and valid counts.
-Window means average sample statistics: a mean of batch medians is NOT a pooled median.
-Nullable measurement values have an accompanying `unavailable_reason`.
-No missing observation is replaced by zero. Read counts before comparing windows.
+up to {window} preceding observations. Missing values occupy window positions but are
+excluded from their means. Null aggregates have an accompanying unavailable_reason;
+no missing observation is replaced by zero. Use Parquet for exact samples, timestamps,
+missing-value reasons, and window coverage. latest_shape and dtype describe the latest
+observation; a history may contain different tensor shapes.
+
 
 ## TensorBoard
 

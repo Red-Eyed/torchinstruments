@@ -54,7 +54,8 @@ completed chunks. Summary finalization is synchronous and adds close-time IO and
 cost; its output size grows with observed layer/call/path identities, not with run duration.
 
 JSON is an array of layer records. Each contains tensor identities and metric summaries:
-counts, first/latest, finite extrema, and two adjacent observation windows. Delayed backwards
+counts, whole-history mean, population std, min/max, linearly interpolated quartiles, and
+two adjacent window means. Metrics are keyed by name; sample records stay in Parquet. Delayed backwards
 are ordered by originating sample ID. Window means average sample statistics; they are not
 pooled tensor distribution statistics. Selected but unexecuted modules have empty tensor lists.
 

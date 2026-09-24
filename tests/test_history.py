@@ -24,8 +24,8 @@ def summary_metrics(path: Path) -> pl.DataFrame:
         pl.read_json(path)
         .explode("tensors", empty_as_null=True)
         .unnest("tensors")
-        .explode("statistics", empty_as_null=True)
-        .unnest("statistics")
+        .select("signal", pl.col("statistics").struct.field("mean").alias("summary"))
+        .unnest("summary")
     )
 
 
@@ -53,13 +53,21 @@ def test_all_artifacts_and_exact_per_layer_statistics(telemetry_dir: Path) -> No
     history = pl.read_parquet(telemetry_dir / "history.parquet")
     assert history.height == 72
     assert history["timestamp"].dtype == pl.Datetime("us", "UTC")
-    mean = summary_metrics(telemetry_dir / "result.json").filter(
-        (pl.col("metric") == "mean") & (pl.col("signal") == "output")
+    mean = summary_metrics(telemetry_dir / "result.json").filter(pl.col("signal") == "output")
+    assert mean["observations"].item() == 4
+    assert mean["unavailable"].item() == 0
+    assert mean["mean"].item() == 2.5
+    assert mean["std"].item() == pytest.approx(1.25**0.5)
+    assert mean["min"].item() == 1
+    assert mean["max"].item() == 4
+    assert mean["p25"].item() == 1.75
+    assert mean["p50"].item() == 2.5
+    assert mean["p75"].item() == 3.25
+    assert mean["previous_window_mean"].item() == 1.5
+    assert mean["recent_window_mean"].item() == 3.5
+    assert not {"first", "latest", "minimum", "maximum", "sample_id", "timestamp"} & set(
+        mean.columns
     )
-    assert mean.select(pl.col("first").struct.field("value")).item() == 1
-    assert mean.select(pl.col("latest").struct.field("value")).item() == 4
-    assert mean.select(pl.col("previous_window").struct.field("mean")).item() == 1.5
-    assert mean.select(pl.col("recent_window").struct.field("mean")).item() == 3.5
     assert pl.read_json(telemetry_dir / "result.json").columns == [
         "layer",
         "type",
@@ -97,10 +105,12 @@ def test_adjacent_windows_never_overlap(telemetry_dir: Path, count: int) -> None
         assert pl.read_json(telemetry_dir / "result.json")["tensors"].item().is_empty()
         return
     mean = metrics.filter(pl.col("metric") == "mean")
-    assert mean.select(pl.col("previous_window").struct.field("observations")).item() == min(
-        2, max(0, count - 2)
+    previous = list(range(count))[:-2][-2:]
+    recent = list(range(count))[-2:]
+    assert mean["previous_window_mean"].item() == (
+        sum(previous) / len(previous) if previous else None
     )
-    assert mean.select(pl.col("recent_window").struct.field("observations")).item() == min(2, count)
+    assert mean["recent_window_mean"].item() == sum(recent) / len(recent)
 
 
 @pytest.mark.parametrize("values", [[], [float("nan"), float("inf")], [float("nan"), 2.0]])
@@ -120,8 +130,39 @@ def test_unavailable_values_remain_distinct_from_zero(
     else:
         assert mean["value"].item() is None
         assert mean["unavailable_reason"].item()
+        summary = summary_metrics(telemetry_dir / "result.json")
+        assert summary["mean"].item() is None
+        assert summary["unavailable"].item() == 1
+        assert summary["unavailable_reason"].item()
     text = (telemetry_dir / "result.json").read_text()
     assert "NaN" not in text and "Infinity" not in text
+
+
+def test_history_summary_excludes_missing_values_without_shifting_windows(
+    telemetry_dir: Path,
+) -> None:
+    """Keep missing sample positions while computing aggregates from available values."""
+    model = nn.Identity()
+    inject_observer(
+        model,
+        sampler=AlwaysSampler(),
+        output_dir=telemetry_dir,
+        history_config=HistoryConfig(window=2),
+        error_policy="raise",
+    )
+    for value in [1.0, float("nan"), 3.0, float("nan")]:
+        model(torch.tensor(value))
+    remove_observer(model)
+    summary = summary_metrics(telemetry_dir / "result.json")
+    assert summary["observations"].item() == 4
+    assert summary["unavailable"].item() == 2
+    assert summary["mean"].item() == 2
+    assert summary["std"].item() == 1
+    assert summary["p25"].item() == 1.5
+    assert summary["p50"].item() == 2
+    assert summary["p75"].item() == 2.5
+    assert summary["previous_window_mean"].item() == 1
+    assert summary["recent_window_mean"].item() == 3
 
 
 class Shared(nn.Module):
@@ -161,8 +202,8 @@ def test_shared_calls_and_delayed_backwards(telemetry_dir: Path) -> None:
         & (pl.col("call_index") == 1)
         & (pl.col("metric") == "mean")
     )
-    assert selected.select(pl.col("latest").struct.field("sample_id")).item() == 1
-    assert selected.select(pl.col("recent_window").struct.field("mean")).item() == 7
+    assert selected["previous_window_mean"].item() == 3
+    assert selected["recent_window_mean"].item() == 7
     assert pl.read_json(telemetry_dir / "result.json")["aliases"].item().to_list() == [
         "first",
         "second",

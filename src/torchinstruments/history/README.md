@@ -8,7 +8,8 @@ chunks atomically with Polars, and streams them into a final file on close. It o
 provided destination. It does not know about training tasks or example problem definitions.
 
 The summary module constructs Polars query plans: `aggregate_history` computes metric summaries;
-`layer_results` groups those by tensor and layer. `write_result` is the thin JSON IO adapter.
+`layer_results` pivots only the aggregated rows into metric names and groups them by tensor
+and layer. JSON contains history distributions and adjacent window means, never sample records. `write_result` is the thin JSON IO adapter.
 Callers provide the module catalog, source path, destination, and comparison window.
 
 ```python

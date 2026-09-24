@@ -2,6 +2,32 @@
 
 All notable changes to TorchInstruments are documented here.
 
+## [0.8.0] - 2026-09-24
+
+### Backwards Incompatible Changes
+
+#### JSON history summaries
+
+Replace each tensor's `statistics` list with an object keyed by metric name. Each metric
+contains observation and unavailable counts, whole-history mean, population standard deviation,
+min/max, linearly interpolated quartiles, and previous/recent window means. Remove embedded
+first/latest/extreme sample records; exact samples and timestamps remain in `history.parquet`.
+
+JSON consumers should look up `tensor.statistics.mean` instead of searching the statistics list
+for `metric == "mean"`. Replace `recent_window.mean` with `recent_window_mean` and query Parquet
+for individual observations. Aggregates give each available sample statistic equal weight:
+`statistics.mean.p50` is the median of sampled tensor means, not a pooled tensor median.
+Missing samples retain their window positions and are excluded from numeric aggregates.
+
+### Improvements
+
+- Write `result.json` with two-space indentation for direct inspection.
+
+### Documentation
+
+- Update the generated `index.md` and analysis guides to explain history aggregates,
+  adjacent window means, missing measurements, and when to query Parquet.
+
 ## [0.7.0] - 2026-09-24
 
 ### Highlights
