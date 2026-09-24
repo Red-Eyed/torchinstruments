@@ -18,7 +18,7 @@ from torch import nn
 
 from torchinstruments.capture import CallCapture, CaptureCallbacks
 from torchinstruments.errors import ErrorPolicy
-from torchinstruments.gradient_capture import FirstBackward
+from torchinstruments.gradient_capture import FirstBackward, backward_is_running
 from torchinstruments.isolated_measurement import IsolatedMeasurement
 from torchinstruments.measurement import Measurements
 from torchinstruments.pytree import iter_tensor_leaves
@@ -180,6 +180,7 @@ class Observer:
         self._wall_clock = wall_clock
         self._performance_clock = performance_clock
         self._forward_index = 0
+        self._independent_indices: dict[str, int] = {}
         self._sample_id = 0
         self._id_lock = threading.Lock()
         self._sink_lock = threading.Lock()
@@ -339,14 +340,48 @@ class Observer:
     def _collect_module_output(
         self, module_name: str, execution: ExecutionContext, output: object
     ) -> None:
-        """Reduce one selected output only while its root context is sampled."""
+        """Collect within a root sample or sample an independently invoked child."""
         stack = self._contexts.get()
         if not stack:
+            self._collect_independent_output(module_name, execution, output)
             return
         context = stack[-1]
         if not isinstance(context, _SampleBuilder):
             return
 
+        self._reduce_output(context, module_name, execution, output)
+
+    def _collect_independent_output(
+        self, module_name: str, execution: ExecutionContext, output: object
+    ) -> None:
+        """Capture bypassed roots without treating backward recomputation as new input."""
+        if backward_is_running():
+            return
+        with self._id_lock:
+            index = self._independent_indices.get(module_name, 0)
+            self._independent_indices[module_name] = index + 1
+        event = SamplingEvent(index, self._monotonic_clock(), module_name)
+        try:
+            if not self._sampler.should_sample(event):
+                return
+        except Exception as error:
+            self._handle_error(error, builder=None, module_name=module_name, probe="sampling")
+            return
+        context = _SampleBuilder(
+            sample_id=self._next_sample_id(),
+            forward_index=self._next_forward_index(),
+            timestamp=self._wall_clock(),
+            on_backward=self._finish_backward,
+        )
+        with self._gradient_handles_lock:
+            self._gradient_hook_handles.add(context.gradients)
+        self._reduce_output(context, module_name, execution, output)
+        self._emit_sample(context)
+
+    def _reduce_output(
+        self, context: _SampleBuilder, module_name: str, execution: ExecutionContext, output: object
+    ) -> None:
+        """Bind gradients and reduce one invocation into its owning sample."""
         started_at = self._performance_clock()
         call = context.add_module_call(module_name, execution)
         try:

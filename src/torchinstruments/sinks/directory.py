@@ -183,8 +183,11 @@ Each Parquet row is one statistic for one tensor observation. Identity columns a
 `layer`, `call_index`, `signal`, `tensor_path`, `mode`, and `grad_enabled`.
 `mode` is the selected module's train/eval mode at invocation; `grad_enabled` records
 autograd recording at that invocation. Delayed backwards retain this original context.
-`sample_id` and `forward_index`
-identify the originating forward, not an optimizer step. `timestamp` is its UTC time.
+`sample_id` and `forward_index` identify an observed invocation, not an optimizer step.
+Normal root calls group their child measurements into one sample. When the root is bypassed,
+selected children are sampled independently with separate interval deadlines. Each such sample
+contains one module call with `call_index=0`; do not infer batch alignment across layers.
+`timestamp` is the observation's UTC time.
 `shape` and `dtype` describe that observation. `metric` names the statistic and
 `value` holds it. A missing value always has an `unavailable_reason`.
 Sort by `sample_id`: delayed backwards may arrive out of order.

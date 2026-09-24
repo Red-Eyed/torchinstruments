@@ -7,6 +7,15 @@ import torch
 from torch.utils.hooks import RemovableHandle
 
 
+def backward_is_running() -> bool:
+    """Identify engine recomputation without inventing a new forward sample.
+
+    PyTorch's graph-task ID distinguishes backward work from independent child calls;
+    grad-enabled state alone cannot distinguish non-reentrant checkpoint recomputation.
+    """
+    return torch._C._current_graph_task_id() != -1
+
+
 class FirstBackward:
     """Own one sample's tensor hooks without retaining source tensors."""
 

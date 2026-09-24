@@ -40,6 +40,15 @@ def test_every_n_forwards_sampler_counts_root_forwards() -> None:
     assert decisions == [False, False, True, False, False, True, False]
 
 
+def test_independent_layers_have_separate_deadlines() -> None:
+    """Avoid starving later layers when an earlier layer consumes its interval."""
+    sampler = TimedSampler(timedelta(seconds=1), clock=lambda: 100.0)
+    for module in ["", "encoder", "head"]:
+        assert sampler.should_sample(SamplingEvent(0, 100.0, module))
+        assert not sampler.should_sample(SamplingEvent(1, 100.5, module))
+        assert sampler.should_sample(SamplingEvent(2, 101.0, module))
+
+
 def test_always_sampler_selects_every_forward() -> None:
     """Select every event under the unconditional policy."""
     sampler = AlwaysSampler()

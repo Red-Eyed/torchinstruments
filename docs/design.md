@@ -42,6 +42,13 @@ flowchart TD
 
 ## Storage and semantics
 
+Native child hooks work even when callers bypass the observed root. Calls inside a root scope
+retain their grouped sampling decision. Outside that scope, each selected module has its own
+sampling opportunity and timed deadline. Independent samples contain one call at index zero;
+their sample IDs do not imply batch alignment across layers. Custom samplers receive a module
+path in `SamplingEvent.module_name` and a scope-local invocation count. The empty path denotes
+root sampling. Backward graph-task detection excludes checkpoint recomputation from this fallback.
+
 History is a long table with one row per statistic. Layer, call index, signal, tensor path,
 sample ID, forward index, UTC timestamp, shape, and dtype establish its meaning. Values may be
 nullable only alongside an unavailable reason. Default measurements are mean, population std,

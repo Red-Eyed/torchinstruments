@@ -16,6 +16,11 @@ finally:
 The first forward is sampled immediately, then once per interval. The default interval is one
 minute. Evaluation works too, including `torch.no_grad()` and `torch.inference_mode()`.
 
+Calling a child directly, such as `model.encoder(x)` inside a Lightning step, also works.
+When the observed root is bypassed, selected layers sample independently at the given interval.
+No Lightning adapter or forward wrappers are required for normal child calls. Explicit
+`leaf.forward(x)` bypasses that leaf's native hooks; use `leaf(x)` to observe it.
+
 ## Output
 
 Everything is created automatically:

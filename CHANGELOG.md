@@ -4,6 +4,17 @@ All notable changes to TorchInstruments are documented here.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-09-24
+
+### Bug Fixes
+
+- Capture selected children when Lightning or another caller bypasses the observed root.
+  Native hooks now collect independent per-layer samples with separate interval deadlines;
+  existing grouped root samples remain unchanged. Artifacts update before observer removal.
+  Backward checkpoint recomputation is excluded from independent forward capture.
+- Include the sampling scope in `SamplingEvent.module_name` for custom policies. Independent
+  child events use per-module invocation counts; their sample IDs are not shared batch IDs.
+
 ## [0.9.1] - 2026-09-24
 
 ### Bug Fixes

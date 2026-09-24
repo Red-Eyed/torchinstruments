@@ -10,17 +10,22 @@ from torchinstruments.records import JsonScalar
 
 @dataclass(frozen=True)
 class SamplingEvent:
-    """Describe one root-forward sampling opportunity using monotonic time."""
+    """Describe a root or independent child invocation using monotonic time.
+
+    An empty module name denotes a root invocation. Independent children have their
+    own invocation counts and use their canonical module path as the sampling key.
+    """
 
     forward_index: int
     monotonic_time: float
+    module_name: str = ""
 
 
 class SamplingPolicy(Protocol):
-    """Decide whether a root forward should create a telemetry sample."""
+    """Decide whether a root or independent child invocation should be sampled."""
 
     def should_sample(self, event: SamplingEvent) -> bool:
-        """Return whether the supplied root-forward event should be sampled."""
+        """Select an event whose count is local to its module sampling scope."""
         ...
 
 
