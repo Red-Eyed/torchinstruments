@@ -9,7 +9,7 @@ from pathlib import Path
 
 from torch import nn
 
-from torchinstruments.capture import ForwardCallCapture, HookCallCapture
+from torchinstruments.capture import ForwardCallCapture
 from torchinstruments.distributed import RankPolicy, detect_rank, parse_rank_policy, rank_is_enabled
 from torchinstruments.errors import ErrorPolicy, ObserverAlreadyAttachedError, parse_error_policy
 from torchinstruments.history.summary import HistoryConfig
@@ -17,7 +17,7 @@ from torchinstruments.measurement import Measurements, TensorMeasurement
 from torchinstruments.observer import Observer
 from torchinstruments.reducers import HistogramReducer, Reducer, default_reducers, histogram
 from torchinstruments.sampling import SamplingPolicy, TimedSampler
-from torchinstruments.selectors import ModuleSelector, leaf_modules
+from torchinstruments.selectors import ModuleSelector
 from torchinstruments.sinks import CompositeSink, DirectorySink, Sink
 
 _DEFAULT_HISTORY = HistoryConfig()
@@ -50,7 +50,6 @@ def inject_observer(
     history_config: HistoryConfig = _DEFAULT_HISTORY,
     rank_policy: RankPolicy | str = RankPolicy.RANK0,
     error_policy: ErrorPolicy | str = ErrorPolicy.WARN,
-    capture_direct_forwards: bool = False,
 ) -> None:
     """Attach passive observation without changing the training loop.
 
@@ -59,6 +58,8 @@ def inject_observer(
     order; supply ``histogram_selector`` to focus them. Scalars cover all selected modules.
     Supplied sinks receive an additional copy of events; a supplied DirectorySink owns the
     run destination itself. Externally supplied sinks retain their own resource ownership.
+    Every module is selected by default, including the root and composite blocks. Each selected
+    forward is intercepted once, covering direct ``forward()`` and normal ``module(...)`` calls.
     """
     if hasattr(model, _OBSERVER_ATTRIBUTE):
         raise ObserverAlreadyAttachedError("model already has a TorchInstruments observer")
@@ -75,8 +76,11 @@ def inject_observer(
     if sampler is not _USE_DEFAULT and interval != _DEFAULT_INTERVAL:
         raise ValueError("interval and sampler cannot be configured together")
     resolved_sampler = TimedSampler(interval) if sampler is _USE_DEFAULT else sampler
-    select = leaf_modules() if selector is _USE_DEFAULT else selector
-    selected = {name: module for name, module in model.named_modules() if select(name, module)}
+    selected = {
+        name: module
+        for name, module in model.named_modules()
+        if selector is _USE_DEFAULT or selector(name, module)
+    }
     scalar = default_reducers() if reducers is _USE_DEFAULT else tuple(reducers)
     if not scalar:
         raise ValueError("at least one scalar reducer is required")
@@ -106,7 +110,7 @@ def inject_observer(
         measurements=measurements,
         sink=destination,
         error_policy=parse_error_policy(error_policy),
-        capture=ForwardCallCapture() if capture_direct_forwards else HookCallCapture(),
+        capture=ForwardCallCapture(),
     )
     observer.attach()
     setattr(model, _OBSERVER_ATTRIBUTE, observer)

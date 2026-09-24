@@ -245,7 +245,9 @@ def test_shared_calls_and_delayed_backwards(telemetry_dir: Path) -> None:
     )
     assert selected["previous_window_mean"].item() == 3
     assert selected["recent_window_mean"].item() == 7
-    assert pl.read_json(telemetry_dir / "result.json")["aliases"].item().to_list() == [
+    assert pl.read_json(telemetry_dir / "result.json").filter(pl.col("layer") == "first")[
+        "aliases"
+    ].item().to_list() == [
         "first",
         "second",
     ]
@@ -276,13 +278,13 @@ def test_thousands_of_layers_keep_history_and_limit_histogram_work(telemetry_dir
     model(torch.tensor([1.0, 2.0]))
     remove_observer(model)
     assert calls == 2
-    assert pl.read_json(telemetry_dir / "result.json").height == 1000
+    assert pl.read_json(telemetry_dir / "result.json").height == 1001
     assert (
         pl.scan_parquet(telemetry_dir / "history.parquet")
         .select(pl.col("layer").n_unique())
         .collect()
         .item()
-        == 1000
+        == 1001
     )
     events = EventAccumulator(str(telemetry_dir / "tensorboard")).Reload()
     tags = events.Tags()["histograms"]

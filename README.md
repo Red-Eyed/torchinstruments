@@ -18,8 +18,8 @@ minute. Evaluation works too, including `torch.no_grad()` and `torch.inference_m
 
 Calling a child directly, such as `model.encoder(x)` inside a Lightning step, also works.
 When the observed root is bypassed, selected layers sample independently at the given interval.
-No Lightning adapter or forward wrappers are required for normal child calls. Explicit
-`leaf.forward(x)` bypasses that leaf's native hooks; use `leaf(x)` to observe it.
+Each selected module's `forward()` is intercepted once, so both `module(x)` and
+`module.forward(x)` are captured. Removal restores the original methods.
 
 ## Output
 
@@ -50,7 +50,8 @@ no scores or diagnoses. Give `index.md` to an LLM as the starting point.
 
 ## Layer selection
 
-All leaf modules contribute scalar history. Histograms cover the first eight selected modules.
+All modules, including composite blocks and the root, contribute scalar history when called.
+The root has the empty layer name `""`. Histograms cover the first eight selected modules.
 To focus the dashboard, use `histogram_selector`:
 
 ```python
@@ -61,6 +62,7 @@ inject_observer(
 ```
 
 Use `selector` similarly to restrict all collection. Histogram focus must match an observed module.
+Use `selector=leaf_modules()` (imported from `torchinstruments`) for leaf-only coverage.
 Other existing extension arguments remain available; ordinary usage needs none of them.
 
 ## Examples and limits

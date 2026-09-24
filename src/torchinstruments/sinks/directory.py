@@ -171,6 +171,9 @@ Read [result.json](result.json) for per-layer summaries. It contains measurement
 not diagnoses, rankings, or categories. Every selected layer is listed, including
 layers without observations. Each sampled forward or backward refreshes result.json
 from the collected history. No layers are ranked or removed to meet a report byte budget.
+By default all modules are selected, including composite blocks and the root (`layer=""`).
+Composite and child outputs can reference the same tensor; they are separate module observations,
+not independent evidence to pool. Both normal calls and direct forward calls are captured.
 
 ## History
 

@@ -1,17 +1,15 @@
-"""Capture module invocations through PyTorch hooks or forward wrappers."""
+"""Capture module invocations through reversible forward interception."""
 
 from __future__ import annotations
 
 import functools
 from collections.abc import Callable, Sequence
-from contextvars import ContextVar
 from dataclasses import dataclass
 from types import MethodType
 from typing import Protocol
 
 import torch
 from torch import nn
-from torch.utils.hooks import RemovableHandle
 
 from torchinstruments.records import ExecutionContext, ModuleMode
 
@@ -48,95 +46,6 @@ class CallCapture(Protocol):
         ...
 
 
-class HookCallCapture:
-    """Capture normal ``module(...)`` dispatch with native PyTorch hooks."""
-
-    def __init__(self) -> None:
-        """Initialize an unattached collection of removable hook handles."""
-        self._handles: list[RemovableHandle] = []
-
-    def capture_type(self) -> str:
-        """Identify native hook dispatch in serialized run metadata."""
-        return "pytorch_hooks"
-
-    def attach(
-        self,
-        model: nn.Module,
-        selected_modules: Sequence[tuple[str, nn.Module]],
-        callbacks: CaptureCallbacks,
-    ) -> None:
-        """Register selected output hooks and one root lifecycle hook pair."""
-        if self._handles:
-            raise RuntimeError("hook capture is already attached")
-
-        try:
-            for module_name, module in selected_modules:
-                self._attach_module(module_name, module, callbacks.observe_output)
-            self._handles.append(model.register_forward_pre_hook(self._root_pre_hook(callbacks)))
-            self._handles.append(
-                model.register_forward_hook(self._root_post_hook(callbacks), always_call=True)
-            )
-        except BaseException:
-            self.remove()
-            raise
-
-    def remove(self) -> None:
-        """Remove all native hooks registered by this strategy."""
-        for handle in self._handles:
-            handle.remove()
-        self._handles.clear()
-
-    def _attach_module(
-        self,
-        name: str,
-        module: nn.Module,
-        observe: Callable[[str, ExecutionContext, object], None],
-    ) -> None:
-        """Bind invocation context before execution, including nested calls and failures."""
-        contexts: ContextVar[tuple[ExecutionContext, ...]] = ContextVar(
-            f"module_context_{id(module)}", default=()
-        )
-
-        def start(current: nn.Module, _inputs: tuple[object, ...]) -> None:
-            """Snapshot mode before a module can change it inside forward."""
-            contexts.set((*contexts.get(), _execution_context(current)))
-
-        def finish(_module: nn.Module, _inputs: tuple[object, ...], output: object) -> None:
-            """Restore the surrounding context even after a failed forward."""
-            stack = contexts.get()
-            if not stack:
-                return
-            contexts.set(stack[:-1])
-            observe(name, stack[-1], output)
-
-        self._handles.append(module.register_forward_pre_hook(start))
-        self._handles.append(module.register_forward_hook(finish, always_call=True))
-
-    def _root_pre_hook(
-        self,
-        callbacks: CaptureCallbacks,
-    ) -> Callable[[nn.Module, tuple[object, ...]], None]:
-        """Adapt root-context creation to PyTorch's pre-hook signature."""
-
-        def start(_module: nn.Module, _inputs: tuple[object, ...]) -> None:
-            """Start one root-forward context before model execution."""
-            callbacks.start_root()
-
-        return start
-
-    def _root_post_hook(
-        self,
-        callbacks: CaptureCallbacks,
-    ) -> Callable[[nn.Module, tuple[object, ...], object], None]:
-        """Adapt root-context completion to PyTorch's forward-hook signature."""
-
-        def finish(_module: nn.Module, _inputs: tuple[object, ...], _output: object) -> None:
-            """Finish one root-forward context after model execution or failure."""
-            callbacks.finish_root()
-
-        return finish
-
-
 @dataclass(frozen=True)
 class _ForwardPatch:
     """Remember enough instance state to restore one wrapped forward safely."""
@@ -147,11 +56,7 @@ class _ForwardPatch:
 
 
 class ForwardCallCapture:
-    """Capture both ``module(...)`` and literal ``module.forward(...)`` calls.
-
-    This strategy installs instance-level forward wrappers once. It is intentionally opt-in
-    because replacing a Python method is more invasive than registering native PyTorch hooks.
-    """
+    """Capture normal and direct calls by intercepting each selected forward once."""
 
     def __init__(self) -> None:
         """Initialize an unattached collection of reversible forward patches."""

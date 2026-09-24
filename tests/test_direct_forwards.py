@@ -11,7 +11,13 @@ import pytest
 import torch
 from torch import nn
 
-from torchinstruments import AlwaysSampler, DirectorySink, inject_observer, remove_observer
+from torchinstruments import (
+    AlwaysSampler,
+    DirectorySink,
+    inject_observer,
+    leaf_modules,
+    remove_observer,
+)
 
 
 class _InvocationStyle(StrEnum):
@@ -57,7 +63,6 @@ def test_forward_capture_supports_call_and_forward_exactly_once(
     inject_observer(
         observed,
         sampler=AlwaysSampler(),
-        capture_direct_forwards=True,
         sink=detailed_sink,
         error_policy="raise",
     )
@@ -75,7 +80,7 @@ def test_forward_capture_supports_call_and_forward_exactly_once(
     remove_observer(observed)
     history = pl.read_parquet(telemetry_dir / "history.parquet")
     assert history["call_index"].unique().to_list() == [0]
-    assert history["layer"].unique().to_list() == ["linear"]
+    assert set(history["layer"]) == {"", "linear"}
     assert set(history["signal"]) == {"output", "output_gradient"}
     assert history["shape"].to_list() == [[2, 3]] * history.height
 
@@ -96,7 +101,6 @@ def test_forward_capture_restores_an_existing_instance_override(telemetry_dir: P
     inject_observer(
         model,
         sampler=AlwaysSampler(),
-        capture_direct_forwards=True,
         output_dir=telemetry_dir,
     )
 
@@ -115,3 +119,50 @@ def _invoke(
     if style is _InvocationStyle.FORWARD:
         return model.forward(inputs)
     return model(inputs)
+
+
+def test_nested_shared_modules_are_intercepted_once(telemetry_dir: Path) -> None:
+    """Include composite blocks and root without installing twice through shared aliases."""
+    block = nn.Sequential(nn.Linear(2, 2))
+    model = nn.Sequential(block, block)
+    originals = {name: module.forward for name, module in model.named_modules()}
+    inject_observer(model, output_dir=telemetry_dir, error_policy="raise")
+    try:
+        model.forward(torch.ones(1, 2)).sum().backward()
+        history = pl.read_parquet(telemetry_dir / "history.parquet")
+        calls = history.filter(
+            (pl.col("signal") == "output") & (pl.col("metric") == "mean")
+        ).select("layer", "call_index")
+        assert set(calls.iter_rows()) == {("", 0), ("0", 0), ("0", 1), ("0.0", 0), ("0.0", 1)}
+        assert calls.height == 5
+        catalog = pl.read_json(telemetry_dir / "result.json")
+        assert catalog.filter(pl.col("layer") == "0")["aliases"].item().to_list() == ["0", "1"]
+    finally:
+        remove_observer(model)
+    assert {name: module.forward for name, module in model.named_modules()} == originals
+
+
+def test_leaf_selector_remains_available(telemetry_dir: Path) -> None:
+    """Allow callers to retain leaf-only records while capturing direct forwards by default."""
+    model = nn.Sequential(nn.Sequential(nn.Linear(2, 2)))
+    inject_observer(model, selector=leaf_modules(), output_dir=telemetry_dir, error_policy="raise")
+    try:
+        model.forward(torch.ones(1, 2))
+        assert pl.read_json(telemetry_dir / "result.json")["layer"].to_list() == ["0.0"]
+        assert pl.read_parquet(telemetry_dir / "history.parquet").height == 9
+    finally:
+        remove_observer(model)
+
+
+def test_removal_preserves_a_later_forward_replacement(telemetry_dir: Path) -> None:
+    """Restore only interception still owned by the observer."""
+    model = nn.Identity()
+    inject_observer(model, output_dir=telemetry_dir)
+
+    def replacement(inputs: torch.Tensor) -> torch.Tensor:
+        """Represent a caller's subsequent customization."""
+        return inputs + 1
+
+    model.__dict__["forward"] = replacement
+    remove_observer(model)
+    assert model.__dict__["forward"] is replacement

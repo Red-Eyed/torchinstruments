@@ -42,7 +42,12 @@ flowchart TD
 
 ## Storage and semantics
 
-Native child hooks work even when callers bypass the observed root. Calls inside a root scope
+Reversible forward interception covers every module by default, including composites and root.
+Both normal calls and direct forward calls use this one capture path; no parallel native hooks
+are installed. Shared module aliases are intercepted only once. Removal restores original
+methods unless the caller has subsequently replaced them.
+
+Child interception works even when callers bypass the observed root. Calls inside a root scope
 retain their grouped sampling decision. Outside that scope, each selected module has its own
 sampling opportunity and timed deadline. Independent samples contain one call at index zero;
 their sample IDs do not imply batch alignment across layers. Custom samplers receive a module

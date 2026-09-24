@@ -23,7 +23,8 @@ optimizer steps.
 - Selected children called outside a root context create independent samples. Timed deadlines
   are keyed by module path; an explicitly unsampled root must never fall back to child sampling.
   Backward engine recomputation must not create independent forward samples.
-- `capture.py` provides native hooks and reversible direct-forward wrappers.
+- `capture.py` intercepts selected forward methods once, covering normal and direct calls.
+  All modules are selected by default; removal restores only methods still owned by capture.
 - `reducers/` computes finite-value statistics and independently sampled histograms on-device.
 - `history/records.py` defines typed scalar observations. `history/parquet.py` buffers compact
   rows into completed chunks using Polars and publishes history.parquet after each sampled event.

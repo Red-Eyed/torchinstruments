@@ -63,10 +63,10 @@ def test_checkpoint_capture_does_not_invent_recomputation_samples(
     gradients = history.filter(pl.col("signal") == "output_gradient")
     if reentrant:
         assert outputs["grad_enabled"].unique().to_list() == [False]
-        assert gradients["layer"].unique().to_list() == ["head"]
+        assert set(gradients["layer"]) == {"", "head"}
     else:
         assert outputs["grad_enabled"].unique().to_list() == [True]
-        assert set(gradients["layer"]) == {"features.0", "features.1", "head"}
+        assert set(gradients["layer"]) == {"", "features", "features.0", "features.1", "head"}
         columns = ["layer", "call_index", "signal", "metric", "value"]
         actual = history.filter(pl.col("sample_id") == 0).select(columns).sort(columns[:-1])
         reference = (

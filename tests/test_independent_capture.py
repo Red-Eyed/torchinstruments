@@ -66,9 +66,8 @@ class ChildCallingModel(L.LightningModule):
 
 @pytest.mark.parametrize("invocation", list(Invocation))
 @pytest.mark.parametrize("training", [False, True])
-@pytest.mark.parametrize("direct_capture", [False, True])
 def test_lightning_collects_without_root_dependency(
-    telemetry_dir: Path, invocation: Invocation, training: bool, direct_capture: bool
+    telemetry_dir: Path, invocation: Invocation, training: bool
 ) -> None:
     """Publish all child layers before removal, including gradients from bypassed roots."""
     model = ChildCallingModel(invocation)
@@ -80,7 +79,6 @@ def test_lightning_collects_without_root_dependency(
         model,
         interval=timedelta(seconds=1),
         output_dir=telemetry_dir,
-        capture_direct_forwards=direct_capture,
         error_policy="raise",
     )
     loader = DataLoader(TensorDataset(inputs), batch_size=2)
@@ -101,23 +99,26 @@ def test_lightning_collects_without_root_dependency(
             trainer.validate(model, loader, verbose=False)
         history = pl.read_parquet(telemetry_dir / "history.parquet")
         outputs = history.filter(pl.col("signal") == "output")
-        assert outputs.height == 18
-        assert set(outputs["layer"]) == {"network.0", "network.1"}
+        layers = {"network", "network.0", "network.1"}
+        if invocation is not Invocation.CHILD:
+            layers.add("")
+        assert outputs.height == len(layers) * 9
+        assert set(outputs["layer"]) == layers
         final_mean = outputs.filter(
             (pl.col("layer") == "network.1") & (pl.col("metric") == "mean")
         )["value"].item()
         assert final_mean == pytest.approx(expected.detach().mean().item())
-        counts = pl.read_json(telemetry_dir / "result.json")["tensors"].list.len().to_list()
-        assert counts == ([2, 2] if training else [1, 1])
+        summary = pl.read_json(telemetry_dir / "result.json")
+        observed_counts = summary.filter(pl.col("layer").is_in(layers))["tensors"].list.len()
+        assert observed_counts.to_list() == [2 if training else 1] * len(layers)
         gradients = history.filter(pl.col("signal") == "output_gradient")
-        assert gradients.height == (18 if training else 0)
+        assert gradients.height == (len(layers) * 9 if training else 0)
         if training:
             for actual, baseline in zip(model.parameters(), reference.parameters(), strict=True):
                 torch.testing.assert_close(actual.grad, baseline.grad)
-        if not direct_capture:
-            assert all("forward" not in module.__dict__ for module in model.modules())
     finally:
         remove_observer(model)
+    assert all("forward" not in module.__dict__ for module in model.modules())
 
 
 def test_unsampled_root_does_not_trigger_independent_capture(telemetry_dir: Path) -> None:
@@ -131,7 +132,7 @@ def test_unsampled_root_does_not_trigger_independent_capture(telemetry_dir: Path
         assert pl.read_parquet(telemetry_dir / "history.parquet").is_empty()
         model(torch.ones(2, 2))
         history = pl.read_parquet(telemetry_dir / "history.parquet")
-        assert history.height == 18
+        assert history.height == 36
         assert history["sample_id"].n_unique() == 1
     finally:
         remove_observer(model)

@@ -44,8 +44,7 @@ def test_modes_survive_delayed_backward_and_split_summaries(telemetry_dir: Path)
     assert any("train/grad_enabled_true" in tag for tag in tags)
 
 
-@pytest.mark.parametrize("direct", [False, True])
-def test_mixed_module_modes_and_no_grad_training(telemetry_dir: Path, direct: bool) -> None:
+def test_mixed_module_modes_and_no_grad_training(telemetry_dir: Path) -> None:
     """Record child modes rather than guessing from the root or gradient availability."""
     frozen = nn.BatchNorm1d(2)
     model = nn.Sequential(frozen, nn.Linear(2, 1)).train()
@@ -54,7 +53,6 @@ def test_mixed_module_modes_and_no_grad_training(telemetry_dir: Path, direct: bo
         model,
         output_dir=telemetry_dir,
         sampler=AlwaysSampler(),
-        capture_direct_forwards=direct,
         error_policy="raise",
     )
     with torch.no_grad():
@@ -65,7 +63,11 @@ def test_mixed_module_modes_and_no_grad_training(telemetry_dir: Path, direct: bo
         .select("layer", "mode", "grad_enabled")
         .unique()
     )
-    assert set(contexts.iter_rows()) == {("0", "eval", False), ("1", "train", False)}
+    assert set(contexts.iter_rows()) == {
+        ("", "train", False),
+        ("0", "eval", False),
+        ("1", "train", False),
+    }
 
 
 def test_legacy_history_requires_explicit_context(telemetry_dir: Path) -> None:

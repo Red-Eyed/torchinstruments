@@ -4,6 +4,17 @@ All notable changes to TorchInstruments are documented here.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-24
+
+### Backwards Incompatible Changes
+
+- Select all modules by default, including composite blocks and the root (`layer=""`).
+  Use `selector=leaf_modules()` to retain the previous selection. The histogram limit still
+  applies to the first selected modules, so its default coverage now includes composite blocks.
+- Remove `capture_direct_forwards` from `inject_observer()`; delete that keyword from calls.
+  Forward interception is unconditional and captures both `module(...)` and `module.forward(...)`.
+  Remove the native-hook capture implementation. Original methods are restored on removal.
+
 ## [0.9.2] - 2026-09-24
 
 ### Bug Fixes

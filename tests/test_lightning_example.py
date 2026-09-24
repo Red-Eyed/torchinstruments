@@ -45,7 +45,7 @@ def test_lightning_example_writes_json_and_tensorboard(tmp_path: Path) -> None:
     histogram_tags = _read_histogram_tags(events)
     prefix = "torchinstruments/train/grad_enabled_true"
     output_distribution = f"{prefix}/modules/0/call_0/output/histograms/distribution"
-    gradient_distribution = f"{prefix}/modules/7/call_0/grad_output/histograms/distribution"
+    gradient_distribution = f"{prefix}/modules/6/call_0/grad_output/histograms/distribution"
     assert output_distribution in histogram_tags
     assert gradient_distribution in histogram_tags
     assert [event.step for event in events.Histograms(output_distribution)] == [0, 1, 2]
