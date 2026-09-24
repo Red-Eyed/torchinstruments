@@ -45,7 +45,7 @@ def inject_observer(
     reducers: Sequence[Reducer] | _UseDefault = _USE_DEFAULT,
     histograms: Sequence[HistogramReducer] | _UseDefault = _USE_DEFAULT,
     histogram_selector: ModuleSelector | _UseDefault = _USE_DEFAULT,
-    max_histogram_modules: int = 8,
+    max_histogram_modules: int | _UseDefault = _USE_DEFAULT,
     sink: Sink | _UseDefault = _USE_DEFAULT,
     history_config: HistoryConfig = _DEFAULT_HISTORY,
     rank_policy: RankPolicy | str = RankPolicy.RANK0,
@@ -54,8 +54,9 @@ def inject_observer(
     """Attach passive observation without changing the training loop.
 
     Every directory run writes history, a per-layer JSON summary, an index, and TensorBoard
-    events. Histograms cover at most ``max_histogram_modules`` selected modules in traversal
-    order; supply ``histogram_selector`` to focus them. Scalars cover all selected modules.
+    events. Histograms cover all selected modules by default. Supply ``histogram_selector``
+    to focus them or a positive ``max_histogram_modules`` to cap them in traversal order.
+    Scalars cover all selected modules regardless of histogram focus or limits.
     Supplied sinks receive an additional copy of events; a supplied DirectorySink owns the
     run destination itself. Externally supplied sinks retain their own resource ownership.
     Every module is selected by default, including the root and composite blocks. Each selected
@@ -67,7 +68,7 @@ def inject_observer(
     policy = parse_rank_policy(rank_policy)
     if not rank_is_enabled(policy, rank):
         return
-    if (
+    if max_histogram_modules is not _USE_DEFAULT and (
         isinstance(max_histogram_modules, bool)
         or not isinstance(max_histogram_modules, int)
         or max_histogram_modules < 1
@@ -135,7 +136,7 @@ def _measurements(
     scalar: Sequence[Reducer],
     distributions: Sequence[HistogramReducer],
     histogram_selector: ModuleSelector | _UseDefault,
-    max_histogram_modules: int,
+    max_histogram_modules: int | _UseDefault,
 ) -> Measurements:
     """Bind per-module plans so capture never decides histogram policy."""
     if not distributions:
@@ -144,7 +145,9 @@ def _measurements(
         name
         for name, module in selected.items()
         if histogram_selector is _USE_DEFAULT or histogram_selector(name, module)
-    ][:max_histogram_modules]
+    ]
+    if max_histogram_modules is not _USE_DEFAULT:
+        focus = focus[:max_histogram_modules]
     if selected and not focus:
         raise ValueError("histogram_selector must match at least one observed module")
     focused = set(focus)

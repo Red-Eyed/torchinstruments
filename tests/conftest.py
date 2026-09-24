@@ -10,6 +10,11 @@ from torch import nn
 from torchinstruments import DirectorySink
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Make downloading pinned Hugging Face checkpoints an explicit test option."""
+    parser.addoption("--hf-hub", action="store_true", help="Test downloaded Hugging Face models")
+
+
 @pytest.fixture
 def linear_model() -> nn.Linear:
     """Provide a fresh computational leaf module for each test."""

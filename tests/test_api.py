@@ -85,3 +85,13 @@ def test_duplicate_injection_is_rejected(
         )
 
     remove_observer(linear_model)
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5, "8", None])
+def test_invalid_histogram_limit_is_rejected(
+    linear_model: nn.Linear, telemetry_dir: Path, limit: int
+) -> None:
+    """Accept only positive integers for explicitly requested histogram limits."""
+    with pytest.raises(ValueError, match="max_histogram_modules must be positive"):
+        inject_observer(linear_model, output_dir=telemetry_dir, max_histogram_modules=limit)
+    assert not telemetry_dir.exists()

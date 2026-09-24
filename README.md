@@ -51,7 +51,8 @@ no scores or diagnoses. Give `index.md` to an LLM as the starting point.
 ## Layer selection
 
 All modules, including composite blocks and the root, contribute scalar history when called.
-The root has the empty layer name `""`. Histograms cover the first eight selected modules.
+The root has the empty layer name `""`. Histograms cover all selected modules by default.
+Set `max_histogram_modules` to a positive integer to explicitly limit histogram work and event size.
 To focus the dashboard, use `histogram_selector`:
 
 ```python
