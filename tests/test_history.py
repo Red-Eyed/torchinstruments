@@ -29,6 +29,47 @@ def summary_metrics(path: Path) -> pl.DataFrame:
     )
 
 
+def test_artifacts_refresh_before_removal(telemetry_dir: Path) -> None:
+    """Expose complete history, summaries, and histograms without requiring removal."""
+    model = nn.Identity()
+    inject_observer(model, sampler=AlwaysSampler(), output_dir=telemetry_dir, error_policy="raise")
+    try:
+        assert pl.read_parquet(telemetry_dir / "history.parquet").is_empty()
+        for count, value in enumerate([2.0, 4.0], start=1):
+            output = model(torch.tensor([value], requires_grad=True))
+            forward = summary_metrics(telemetry_dir / "result.json").filter(
+                pl.col("signal") == "output"
+            )
+            assert forward["observations"].item() == count
+            assert forward["mean"].item() == (2.0 if count == 1 else 3.0)
+            assert pl.read_parquet(telemetry_dir / "history.parquet").height == (count * 2 - 1) * 9
+            output.sum().backward()
+            backward = summary_metrics(telemetry_dir / "result.json").filter(
+                pl.col("signal") == "output_gradient"
+            )
+            assert backward["observations"].item() == count
+            assert backward["mean"].item() == 1.0
+            assert pl.read_parquet(telemetry_dir / "history.parquet").height == count * 18
+            assert (
+                f"Forward samples: {count}; backward samples: {count}."
+                in (telemetry_dir / "index.md").read_text()
+            )
+        live_summary = (telemetry_dir / "result.json").read_text()
+        live_history = pl.read_parquet(telemetry_dir / "history.parquet")
+        events = EventAccumulator(
+            str(telemetry_dir / "tensorboard"), size_guidance={"histograms": 0}
+        ).Reload()
+        tags = events.Tags()["histograms"]
+        assert isinstance(tags, list)
+        assert len(tags) == 2
+        for tag in tags:
+            assert [event.step for event in events.Histograms(tag)] == [0, 1]
+    finally:
+        remove_observer(model)
+    assert (telemetry_dir / "result.json").read_text() == live_summary
+    assert pl.read_parquet(telemetry_dir / "history.parquet").equals(live_history)
+
+
 def test_all_artifacts_and_exact_per_layer_statistics(telemetry_dir: Path) -> None:
     """Require history, unscored JSON, a reading guide, and real TensorBoard events."""
     model = nn.Identity()

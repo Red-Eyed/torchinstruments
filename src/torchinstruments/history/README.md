@@ -4,7 +4,7 @@
 one scalar measurement with identity, timestamp, metadata, and an explicit absence reason.
 
 `ParquetHistory` is the imperative shell: it buffers bounded rows, publishes completed Parquet
-chunks atomically with Polars, and streams them into a final file on close. It owns only its
+chunks atomically with Polars, and streams them into a readable snapshot on publication. It owns only its
 provided destination. It does not know about training tasks or example problem definitions.
 
 The summary module constructs Polars query plans: `aggregate_history` computes metric summaries;

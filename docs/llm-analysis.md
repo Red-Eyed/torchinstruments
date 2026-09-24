@@ -5,11 +5,13 @@ histogram focus, collection errors, and summary semantics. Read `result.json` as
 layer records, not a list of diagnosed problems.
 
 1. Check observation counts and unavailable reasons. An unexecuted layer or missing backward is
-   not a healthy measurement. During training the summary is only a catalog; query live chunks.
+   not a healthy measurement. The summary refreshes after each sampled forward or backward;
+   query live chunks for individual observations.
 2. Inspect per-layer history distributions and previous/recent window means. Compare like
    signals, tensor paths, shapes, call indices, mode, and grad_enabled. Keep distributed ranks distinct.
-3. Use Polars to filter `history.parquet` to the relevant measurements. During training or after
-   a crash, query `history.parts/*.parquet`. Sort by sample ID, not arrival order.
+3. Use Polars to filter `history.parquet` to the relevant measurements, including during training.
+   After an interrupted refresh, completed `history.parts/*.parquet` chunks may contain newer
+   observations than the last published snapshot. Sort by sample ID, not arrival order.
 4. Inspect selected TensorBoard histograms when quartiles and scale summaries leave the
    distribution unclear. Re-run with a focused histogram selector if needed.
 5. State a hypothesis and test one change with matched initialization and batches. Task metrics

@@ -58,11 +58,13 @@ and tested for backward(), autograd.grad(), unused branches, and retained graphs
 retain source tensors. Independent reducer adapters preserve successful sibling measurements
 under warn/ignore policies; explicit raise still propagates the failure.
 
-Completed chunks can be queried during training. On removal, Polars streams chunks into one
-atomic history.parquet and writes result.json. This avoids rewriting a growing monolithic file
-on every event. Inference and empty runs also finalize valid artifacts. An interrupted run keeps
-completed chunks. Summary finalization is synchronous and adds close-time IO and aggregation
-cost; its output size grows with observed layer/call/path identities, not with run duration.
+Completed chunks can be queried during training. At initialization and after each sampled event,
+Polars streams chunks into an atomic history.parquet snapshot, then refreshes result.json.
+Removal closes resources and cleans up chunks; it is not required to read any artifact.
+An interrupted run keeps completed chunks and the last published files. Each file is atomic,
+but readers may see different refreshes across files. Snapshot rewrites and summary aggregation
+run synchronously, so their cost grows with collected history; summary output
+size grows with observed layer/call/path identities, not with run duration.
 
 JSON is an array of layer records. Each contains tensor identities and metric summaries:
 counts, whole-history mean, population std, min/max, linearly interpolated quartiles, and
@@ -91,8 +93,8 @@ all-rank policy isolates directories and preserves rank identity in each guide.
 - All-layer TensorBoard histograms: too many series and unnecessary collection cost.
 - Growing JSON history: repetitive and inefficient to query and rewrite.
 - PyArrow Parquet implementation: Polars is the required table/storage/aggregation dependency.
-- Continuous whole-history aggregation: avoided to prevent rescanning all past measurements on
-  each event. Live users query Parquet chunks; final JSON is produced on close.
+- Finalization-only JSON: leaves summaries unavailable during execution. Refreshing on sampled
+  events provides live summaries with exact history quantiles, at the cost of rescanning history.
 
 ## Validation
 

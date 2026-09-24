@@ -23,7 +23,7 @@ optimizer steps.
 - `capture.py` provides native hooks and reversible direct-forward wrappers.
 - `reducers/` computes finite-value statistics and independently sampled histograms on-device.
 - `history/records.py` defines typed scalar observations. `history/parquet.py` buffers compact
-  rows into completed chunks using Polars and streams them into history.parquet on close.
+  rows into completed chunks using Polars and publishes history.parquet after each sampled event.
 - `history/summary.py` uses Polars expressions for history distributions and adjacent window means,
   then groups them by layer and exports result.json with the Polars serializer.
 - Module mode and autograd recording context are captured at invocation and retained through
@@ -33,7 +33,7 @@ optimizer steps.
 - `DirectorySink` owns Parquet, JSON, the LLM guide, and its TensorBoard writer. Extra supplied
   sinks receive events as well. Externally supplied loggers remain caller-owned.
 - `index.md` explains the live chunk location, final files, schema, counts, errors, and queries.
-  result.json is a catalog during training and a full history aggregation on close.
+  result.json refreshes its history aggregation after every sampled forward or backward.
 - `rank_policy="rank0"` attaches nothing on nonzero ranks; `"all"` gives each rank private files.
   There are no shared writers, global scores, or rank-summary merging.
 

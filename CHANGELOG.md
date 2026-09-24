@@ -4,6 +4,17 @@ All notable changes to TorchInstruments are documented here.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-24
+
+### Bug Fixes
+
+- Refresh `result.json` after every sampled forward and backward, making per-layer history
+  summaries available during training and evaluation before observer removal. Updates remain
+  atomic; each refresh aggregates the collected history synchronously.
+- Publish a readable `history.parquet` at initialization and refresh it after every sampled
+  event. All artifacts are available without removal; removal cleans up hooks, resources, and
+  intermediate chunks. Snapshot publication rewrites collected history using Polars.
+
 ## [0.9.0] - 2026-09-24
 
 ### Backwards Incompatible Changes

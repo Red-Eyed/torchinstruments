@@ -84,13 +84,13 @@ class DirectorySink:
             self._backwards += 1
         for observation in observations(sample):
             self._history.append(observation)
-        self._history.flush()
+        self._history.publish()
         for error in sample.errors:
             self._remember_error(error)
         self._remember_unavailable_histograms(sample)
         self._dashboard.observe(sample)
         self._writer.flush()
-        self._publish_index(closed=False)
+        self._publish()
 
     def _remember_error(self, error: ErrorRecord) -> None:
         """Bound retained failure detail independently of run length."""
@@ -130,21 +130,19 @@ class DirectorySink:
             return
         try:
             self._history.close()
-            self._publish(closed=True)
+            self._publish()
         finally:
             self._dashboard.close()
             self._writer.close()
             self._initialized = False
 
-    def _publish(self, *, closed: bool = False) -> None:
+    def _publish(self) -> None:
         """Atomically refresh a descriptive result and its reading guide."""
-        source = (
-            self._output_dir / "history.parquet" if closed else self._history.parts / "*.parquet"
-        )
+        source = self._output_dir / "history.parquet"
         write_result(source, self._output_dir / "result.json", self._modules, self._config.window)
-        self._publish_index(closed=closed)
+        self._publish_index()
 
-    def _publish_index(self, *, closed: bool) -> None:
+    def _publish_index(self) -> None:
         """Refresh live counts and errors without rescanning historical measurements."""
         metadata = (
             f"\nSchema: {self._run.schema_version}; TorchInstruments: "
@@ -161,26 +159,25 @@ class DirectorySink:
             metadata += (
                 f"- {error.module}: {error.probe}: {error.exception_type}: {error.message}\n"
             )
-        write_text_atomic(
-            self._output_dir / "index.md", _index(closed, self._config.window) + metadata
-        )
+        write_text_atomic(self._output_dir / "index.md", _index(self._config.window) + metadata)
 
 
-def _index(closed: bool, window: int) -> str:
+def _index(window: int) -> str:
     """Explain the physical history location and interpretation of each artifact."""
-    source = "history.parquet" if closed else "history.parts/*.parquet"
+    source = "history.parquet"
     return f'''# Model measurements
 
 Read [result.json](result.json) for per-layer summaries. It contains measurements,
 not diagnoses, rankings, or categories. Every selected layer is listed, including
-layers without observations. During training result.json is a catalog; removal finalizes
-its history aggregation. No layers are ranked or removed to meet a report byte budget.
+layers without observations. Each sampled forward or backward refreshes result.json
+from the collected history. No layers are ranked or removed to meet a report byte budget.
 
 ## History
 
-History source: `{source}`. During training, completed chunks live in `history.parts/`.
-Observer removal streams those chunks into [history.parquet](history.parquet).
-After an interrupted run, query the remaining chunks directly.
+History source: `{source}`. Each sampled forward or backward atomically refreshes
+[history.parquet](history.parquet). It is readable without observer removal.
+During execution, completed chunks also remain in `history.parts/` for recovery;
+removal cleans up those chunks. An interrupted run retains the last published snapshot.
 
 Each Parquet row is one statistic for one tensor observation. Identity columns are
 `layer`, `call_index`, `signal`, `tensor_path`, `mode`, and `grad_enabled`.

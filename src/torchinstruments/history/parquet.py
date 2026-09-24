@@ -67,6 +67,7 @@ class ParquetHistory:
         """Create an empty queryable chunk with the complete typed schema."""
         self.parts.mkdir(parents=True, exist_ok=False)
         self._write(pl.DataFrame(schema=SCHEMA))
+        self.publish()
 
     def append(self, observation: Observation) -> None:
         """Buffer one compact observation without retaining a tensor or full history."""
@@ -107,8 +108,8 @@ class ParquetHistory:
         self._write(pl.DataFrame(self._buffer, schema=SCHEMA))
         self._buffer.clear()
 
-    def close(self) -> None:
-        """Stream completed chunks to a single atomic file without collecting them in RAM."""
+    def publish(self) -> None:
+        """Publish a readable history snapshot while retaining chunks for future samples."""
         self.flush()
         temporary = self.path.with_suffix(".parquet.tmp")
         try:
@@ -120,6 +121,10 @@ class ParquetHistory:
             os.replace(temporary, self.path)
         finally:
             temporary.unlink(missing_ok=True)
+
+    def close(self) -> None:
+        """Publish remaining observations and remove the intermediate chunks."""
+        self.publish()
         for part in self.parts.glob("*.parquet"):
             part.unlink()
         self.parts.rmdir()

@@ -27,8 +27,11 @@ Everything is created automatically:
 | `index.md` | Reading guide for an LLM, including schema and history queries |
 | `tensorboard/` | Histogram history for selected layers |
 
-During execution, completed history chunks live in `history.parts/`. `remove_observer()`
-consolidates them and writes the final JSON. Interrupted runs retain completed chunks.
+`history.parquet`, `result.json`, `index.md`, and TensorBoard update after each sampled forward
+or backward. They are readable without calling `remove_observer()`. Removal detaches hooks,
+closes resources, and cleans up intermediate `history.parts/` chunks. Interrupted runs retain
+the last published files and completed chunks. Each refresh rewrites the Parquet snapshot and
+aggregates collected history, so its cost grows with run length.
 
 ## Statistics
 
