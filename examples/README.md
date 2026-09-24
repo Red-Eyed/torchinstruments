@@ -31,14 +31,20 @@ they do not promise that changing one statistic improves a real task metric.
 
 ## Ordinary training
 
-`uv run examples/basic_training.py` runs three small regression updates with every forward
-sampled. It automatically finalizes the Parquet history and per-layer JSON on observer removal.
-The output path is printed. Production callers can keep the timed sampler or select a cadence.
+`uv run examples/basic_training.py` runs three small regression updates with the default
+one-minute interval; the first forward is sampled immediately. It automatically finalizes the Parquet history and per-layer JSON on observer removal.
+The output path is printed. No custom sampler, reducer, or history configuration is needed.
 
 ## Lightning and MNIST
 
 `uv run examples/lightning_mnist.py` downloads MNIST when needed and trains a compact classifier.
 Task metrics and focused histograms share Lightning's TensorBoard logger. The telemetry directory
 also owns the required history, JSON summary, guide, and TensorBoard events.
-The observer attaches to `model.network`, the computational root called by `training_step()`.
+`MnistClassifier.on_fit_start()` takes the logger from `self.trainer.logger` and attaches the
+observer to `self.network`, the computational root called by `training_step()`.
+`on_fit_end()` finalizes telemetry; the outer `finally` also cleans up if fitting fails.
+The model constructor does not need a logger.
 Lightning's logger remains caller-owned and is not closed by observer removal.
+
+The controlled fault experiments observe every synthetic step. The Lightning example shares an
+existing TensorBoard logger. Ordinary integration needs only the standard attach/remove calls.

@@ -7,9 +7,9 @@ from typing import Protocol, TypeAlias, runtime_checkable
 
 import torch
 
-from torchinstruments.records import JsonSetting
+from torchinstruments.records import Absent, JsonSetting
 
-ReducedScalar: TypeAlias = bool | float | int | torch.Tensor
+ReducedScalar: TypeAlias = bool | float | int | torch.Tensor | Absent
 
 
 class Reducer(Protocol):

@@ -38,7 +38,7 @@ def test_external_writer_remains_usable_and_histograms_preserve_counts(tmp_path:
     assert isinstance(tags, list)
     assert "caller/after_removal" in tags
     output = events.Histograms(
-        "torchinstruments/modules/@root/call_0/output/histograms/distribution"
+        "torchinstruments/train/grad_enabled_true/modules/@root/call_0/output/histograms/distribution"
     )[0]
     assert output.histogram_value.num == 5
     assert sum(output.histogram_value.bucket) == 5

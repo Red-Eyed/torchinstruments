@@ -25,7 +25,7 @@ class TimedSampler:
             raise ValueError("interval must be greater than zero")
 
         self._interval_seconds = interval_seconds
-        self._next_due = clock() + interval_seconds
+        self._next_due = clock()
 
     def should_sample(self, event: SamplingEvent) -> bool:
         """Select an event at or after the deadline and schedule the next deadline."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -15,9 +16,7 @@ from torchvision import transforms
 from torchvision.datasets import MNIST
 
 from torchinstruments import (
-    EveryNForwardsSampler,
     TensorBoardSink,
-    histogram,
     inject_observer,
     remove_observer,
 )
@@ -34,18 +33,17 @@ class MnistRunConfig:
     validation_batches: int = 25
     epochs: int = 1
     batch_size: int = 64
-    sample_every_n_forwards: int = 25
-    histogram_every_n_samples: int = 4
+    interval: timedelta = timedelta(minutes=1)
 
     def __post_init__(self) -> None:
         """Reject non-positive limits that would make the demonstration misleading."""
+        if self.interval.total_seconds() <= 0:
+            raise ValueError("interval must be positive")
         limits = {
             "train_batches": self.train_batches,
             "validation_batches": self.validation_batches,
             "epochs": self.epochs,
             "batch_size": self.batch_size,
-            "sample_every_n_forwards": self.sample_every_n_forwards,
-            "histogram_every_n_samples": self.histogram_every_n_samples,
         }
         for name, value in limits.items():
             if value <= 0:
@@ -55,9 +53,11 @@ class MnistRunConfig:
 class MnistClassifier(L.LightningModule):
     """Train a compact CNN while exposing its computational network for instrumentation."""
 
-    def __init__(self) -> None:
-        """Create convolutional feature extraction and a ten-class head."""
+    def __init__(self, config: MnistRunConfig) -> None:
+        """Build the network without requiring an attached trainer or logger."""
         super().__init__()
+        self.telemetry_dir = config.telemetry_dir
+        self.telemetry_interval = config.interval
         self.network = nn.Sequential(
             nn.Conv2d(1, 16, kernel_size=3, padding=1),
             nn.ReLU(),
@@ -68,6 +68,22 @@ class MnistClassifier(L.LightningModule):
             nn.Flatten(),
             nn.Linear(32 * 4 * 4, 10),
         )
+
+    def on_fit_start(self) -> None:
+        """Attach telemetry once Lightning has assigned the trainer and its logger."""
+        logger = self.trainer.logger
+        assert isinstance(logger, TensorBoardLogger)
+        # training_step invokes this network; Lightning need not invoke the outer forward.
+        inject_observer(
+            self.network,
+            interval=self.telemetry_interval,
+            output_dir=self.telemetry_dir,
+            sink=TensorBoardSink(logger),
+        )
+
+    def on_fit_end(self) -> None:
+        """Finalize telemetry while leaving Lightning's logger under trainer ownership."""
+        remove_observer(self.network)
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """Return class logits for one image batch."""
@@ -151,29 +167,12 @@ def run_training(
     per-layer ``result.json``, ``history.parquet``, and a reading guide in ``index.md``.
     """
     L.seed_everything(7, workers=True)
-    model = MnistClassifier()
     logger = TensorBoardLogger(
         save_dir=config.log_dir,
         name="mnist-research",
         version="demo",
     )
-    sink = TensorBoardSink(logger)
-
-    # Instrument the network invoked by training_step; Lightning does not guarantee that the
-    # outer LightningModule.forward method is the trainer's computational root.
-    inject_observer(
-        model.network,
-        sampler=EveryNForwardsSampler(config.sample_every_n_forwards),
-        histograms=[
-            histogram(
-                bins=64,
-                value_range=(-8.0, 8.0),
-                every_n_samples=config.histogram_every_n_samples,
-            ),
-        ],
-        sink=sink,
-        output_dir=config.telemetry_dir,
-    )
+    model = MnistClassifier(config)
     trainer = _build_trainer(config, logger)
     try:
         trainer.fit(

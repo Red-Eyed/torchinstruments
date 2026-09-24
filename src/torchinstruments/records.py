@@ -7,7 +7,22 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TypeAlias
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
+
+
+class ModuleMode(StrEnum):
+    """Identify the selected module's mode at invocation time."""
+
+    TRAIN = "train"
+    EVAL = "eval"
+
+
+@dataclass(frozen=True)
+class ExecutionContext:
+    """Keep module mode independent of autograd recording and later mode changes."""
+
+    mode: ModuleMode
+    grad_enabled: bool
 
 
 @dataclass(frozen=True)
@@ -110,6 +125,7 @@ class ModuleCallRecord:
     """Keep one module invocation distinct from other calls to a shared module."""
 
     call_index: int
+    context: ExecutionContext
     outputs: dict[str, TensorRecord]
     output_gradients: dict[str, TensorRecord]
 

@@ -7,7 +7,7 @@ layer records, not a list of diagnosed problems.
 1. Check observation counts and unavailable reasons. An unexecuted layer or missing backward is
    not a healthy measurement. During training the summary is only a catalog; query live chunks.
 2. Inspect per-layer history distributions and previous/recent window means. Compare like
-   signals, tensor paths, shapes, and call indices. Keep distributed ranks distinct.
+   signals, tensor paths, shapes, call indices, mode, and grad_enabled. Keep distributed ranks distinct.
 3. Use Polars to filter `history.parquet` to the relevant measurements. During training or after
    a crash, query `history.parts/*.parquet`. Sort by sample ID, not arrival order.
 4. Inspect selected TensorBoard histograms when quartiles and scale summaries leave the
@@ -18,6 +18,12 @@ layer records, not a list of diagnosed problems.
 Default distribution metrics use finite tensor entries. Check nonfinite_fraction alongside them.
 Window means average the individual sample statistics and are not pooled statistics. Whole-tensor
 summaries can hide channel-specific effects; they do not establish that every unit is healthy.
+
+Mode is captured per module; an eval-mode module may still participate in backward. With
+reentrant activation checkpointing, internal forwards run with grad_enabled=false and their
+internal output gradients are not captured. Non-reentrant checkpointing is tested. Compare
+output and gradient coverage before interpreting a missing gradient as a detached path.
+Raw output gradients also reflect the caller's loss scaling; compare like scaling conventions.
 
 Example request:
 

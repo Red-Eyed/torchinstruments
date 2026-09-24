@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 import polars as pl
@@ -22,8 +23,7 @@ def test_lightning_example_writes_json_and_tensorboard(tmp_path: Path) -> None:
         train_batches=3,
         validation_batches=1,
         batch_size=16,
-        sample_every_n_forwards=1,
-        histogram_every_n_samples=1,
+        interval=timedelta(microseconds=1),
     )
     train_loader = _mnist_shaped_loader(samples=48)
     validation_loader = _mnist_shaped_loader(samples=16)
@@ -43,11 +43,16 @@ def test_lightning_example_writes_json_and_tensorboard(tmp_path: Path) -> None:
     assert "task/validation_accuracy" in scalar_tags
     assert not any(tag.startswith("torchinstruments/") for tag in scalar_tags)
     histogram_tags = _read_histogram_tags(events)
-    output_distribution = "torchinstruments/modules/0/call_0/output/histograms/distribution"
-    gradient_distribution = "torchinstruments/modules/7/call_0/grad_output/histograms/distribution"
+    prefix = "torchinstruments/train/grad_enabled_true"
+    output_distribution = f"{prefix}/modules/0/call_0/output/histograms/distribution"
+    gradient_distribution = f"{prefix}/modules/7/call_0/grad_output/histograms/distribution"
     assert output_distribution in histogram_tags
     assert gradient_distribution in histogram_tags
-    assert [event.step for event in events.Histograms(output_distribution)] == [0, 1, 2, 3]
+    assert [event.step for event in events.Histograms(output_distribution)] == [0, 1, 2]
+    evaluation = (
+        "torchinstruments/eval/grad_enabled_false/modules/0/call_0/output/histograms/distribution"
+    )
+    assert [event.step for event in events.Histograms(evaluation)] == [3]
     assert [event.step for event in events.Histograms(gradient_distribution)] == [0, 1, 2]
 
 

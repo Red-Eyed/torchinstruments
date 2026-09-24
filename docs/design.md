@@ -2,7 +2,7 @@
 
 Author: Vadym Stupakov <vadim.stupakov@gmail.com>
 Created: 2026-08-14; revised: 2026-09-24
-Status: Implemented and validated
+Status: Implemented; reliability changes pending release
 Authoritative URL: https://github.com/Red-Eyed/torchinstruments
 
 ## Objective and background
@@ -47,6 +47,17 @@ sample ID, forward index, UTC timestamp, shape, and dtype establish its meaning.
 nullable only alongside an unavailable reason. Default measurements are mean, population std,
 min, max, p25, p50, p75, zero fraction, and nonfinite fraction.
 
+Each module call snapshots its train/eval mode and whether autograd recording is enabled.
+Both are part of history and summary identities; delayed backwards retain the original context.
+Old histories without these fields are rejected rather than assigned an inferred mode.
+
+Tensor gradient hooks are registered at the module output, before downstream in-place mutation
+can rebase the gradient edge. A sample-local owner uses PyTorch's private engine completion
+callback to publish its first backward once. This dependency is isolated in gradient_capture.py
+and tested for backward(), autograd.grad(), unused branches, and retained graphs. It does not
+retain source tensors. Independent reducer adapters preserve successful sibling measurements
+under warn/ignore policies; explicit raise still propagates the failure.
+
 Completed chunks can be queried during training. On removal, Polars streams chunks into one
 atomic history.parquet and writes result.json. This avoids rewriting a growing monolithic file
 on every event. Inference and empty runs also finalize valid artifacts. An interrupted run keeps
@@ -89,3 +100,9 @@ Check model output/gradient invariance, shared modules, nested outputs, delayed/
 empty and nonfinite tensors, histogram focus before reduction, buffer bounds, rank isolation,
 writer ownership, and real TensorBoard replay. Verify each example's fault signature against its
 fixed run. CPU tests do not establish CUDA performance or torch.compile compatibility.
+
+Native MPS collection and non-reentrant checkpointing are tested. Reentrant internal gradient
+capture remains unsupported: original internal forwards expose grad_enabled=false, while
+recomputation is not assigned a guessed sample. Parameter gradients can exist despite this gap.
+The timed sampler now collects the first forward immediately. See the
+[reliability plan](reliability-plan.md) and [benchmark evidence](../benchmarks/README.md).

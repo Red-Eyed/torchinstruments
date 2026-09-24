@@ -28,6 +28,8 @@ class _Row(TypedDict):
     metric: str
     value: float | None
     unavailable_reason: str
+    mode: str
+    grad_enabled: bool
 
 
 SCHEMA = {
@@ -43,6 +45,8 @@ SCHEMA = {
     "metric": pl.String,
     "value": pl.Float64,
     "unavailable_reason": pl.String,
+    "mode": pl.String,
+    "grad_enabled": pl.Boolean,
 }
 
 
@@ -89,6 +93,8 @@ class ParquetHistory:
                 metric=observation.metric,
                 value=value,
                 unavailable_reason=reason,
+                mode=observation.context.mode.value,
+                grad_enabled=observation.context.grad_enabled,
             )
         )
         if len(self._buffer) >= self._buffer_rows:

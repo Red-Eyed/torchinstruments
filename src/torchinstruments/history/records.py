@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from torchinstruments.records import Absent, SampleRecord, SampleState
+from torchinstruments.records import Absent, ExecutionContext, SampleRecord, SampleState
 
 
 class Signal(StrEnum):
@@ -32,6 +32,7 @@ class Observation:
     dtype: str
     metric: str
     value: float | Absent
+    context: ExecutionContext
 
 
 def observations(sample: SampleRecord) -> Iterator[Observation]:
@@ -59,4 +60,5 @@ def observations(sample: SampleRecord) -> Iterator[Observation]:
                         tensor.dtype,
                         metric,
                         value,
+                        call.context,
                     )

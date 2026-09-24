@@ -9,7 +9,6 @@ import torch
 from torch import nn
 
 from torchinstruments import (
-    AlwaysSampler,
     inject_observer,
     remove_observer,
 )
@@ -40,18 +39,10 @@ def train(model: nn.Module, *, iterations: int = 3) -> None:
 
 
 def run_demo(output_dir: Path) -> None:
-    """Run instrumented training and always detach hooks before returning.
-
-    ``AlwaysSampler`` makes this short demonstration deterministic: each root forward creates a
-    sample. Production training can omit ``sampler`` to use the one-minute default interval.
-    """
+    """Train with the ordinary interval defaults and always finalize the artifacts."""
     torch.manual_seed(7)
     model = build_model()
-    inject_observer(
-        model,
-        sampler=AlwaysSampler(),
-        output_dir=output_dir,
-    )
+    inject_observer(model, output_dir=output_dir)
     try:
         train(model)
     finally:

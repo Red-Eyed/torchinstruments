@@ -10,11 +10,12 @@ from torchinstruments import AlwaysSampler, EveryNForwardsSampler, TimedSampler
 from torchinstruments.sampling import SamplingEvent
 
 
-def test_timed_sampler_waits_until_deadline() -> None:
+def test_timed_sampler_starts_immediately_then_waits() -> None:
     """Select the first eligible event at each monotonic deadline."""
     sampler = TimedSampler(timedelta(seconds=10), clock=lambda: 100.0)
 
-    assert not sampler.should_sample(SamplingEvent(forward_index=0, monotonic_time=109.9))
+    assert sampler.should_sample(SamplingEvent(forward_index=0, monotonic_time=100.0))
+    assert not sampler.should_sample(SamplingEvent(forward_index=1, monotonic_time=109.9))
     assert sampler.should_sample(SamplingEvent(forward_index=1, monotonic_time=110.0))
     assert not sampler.should_sample(SamplingEvent(forward_index=2, monotonic_time=119.9))
     assert sampler.should_sample(SamplingEvent(forward_index=3, monotonic_time=120.0))

@@ -25,11 +25,17 @@ class HistoryConfig:
                 raise ValueError("history limits must be positive integers")
 
 
-_IDENTITY = ["layer", "call_index", "signal", "tensor_path", "metric"]
+_IDENTITY = ["layer", "call_index", "signal", "tensor_path", "mode", "grad_enabled", "metric"]
 
 
 def aggregate_history(source: Path, window: int) -> pl.LazyFrame:
     """Describe each metric with Polars expressions, preserving missing measurements."""
+    history = pl.scan_parquet(source)
+    if not {"mode", "grad_enabled"}.issubset(history.collect_schema().names()):
+        raise ValueError(
+            "history lacks execution context; use the matching older reader or explicitly "
+            "migrate it with known modes, never infer train/eval from missing gradients"
+        )
     value = pl.col("value").sort_by("sample_id")
     recent = value.tail(window)
     previous = value.head((pl.len().cast(pl.Int64) - window).clip(0)).tail(window)
@@ -45,8 +51,7 @@ def aggregate_history(source: Path, window: int) -> pl.LazyFrame:
         recent.mean().alias("recent_window_mean"),
     ]
     return (
-        pl.scan_parquet(source)
-        .group_by(_IDENTITY)
+        history.group_by(_IDENTITY)
         .agg(
             pl.len().alias("observations"),
             pl.col("value").null_count().alias("unavailable"),
@@ -95,8 +100,17 @@ def layer_results(source: Path, modules: dict[str, ModuleRecord], window: int) -
         return catalog.with_columns(pl.lit([]).alias("tensors")).sort("layer")
     tensors = _tensor_summaries(metrics)
     layers = tensors.group_by("layer").agg(
-        pl.struct("call_index", "signal", "tensor_path", "latest_shape", "dtype", "statistics")
-        .sort_by("call_index", "signal", "tensor_path")
+        pl.struct(
+            "call_index",
+            "signal",
+            "tensor_path",
+            "latest_shape",
+            "dtype",
+            "mode",
+            "grad_enabled",
+            "statistics",
+        )
+        .sort_by("call_index", "signal", "tensor_path", "mode", "grad_enabled")
         .alias("tensors"),
     )
     return (
@@ -110,7 +124,16 @@ def _tensor_summaries(metrics: pl.DataFrame) -> pl.LazyFrame:
     """Pivot aggregated metrics into named fields without materializing history rows."""
     metric_fields = ["observations", "unavailable", *_AGGREGATES, "unavailable_reason"]
     metric_names = metrics["metric"].unique().sort().to_list()
-    identity = ["layer", "call_index", "signal", "tensor_path", "latest_shape", "dtype"]
+    identity = [
+        "layer",
+        "call_index",
+        "signal",
+        "tensor_path",
+        "latest_shape",
+        "dtype",
+        "mode",
+        "grad_enabled",
+    ]
     return (
         metrics.with_columns(
             pl.struct(metric_fields).alias("summary"),

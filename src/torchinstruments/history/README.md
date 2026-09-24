@@ -22,3 +22,7 @@ metrics = aggregate_history(Path("stats/history.parquet"), window=20)
 
 Tests live in `tests/test_history.py`. Timestamps remain typed until serialization. Domain
 absence is `Absent`; serialized nullable values carry `unavailable_reason` beside them.
+
+Execution context adds per-module mode and autograd recording state to every observation and
+aggregation identity. Gradients retain the original forward context. The reader rejects older
+histories without these fields: an explicit migration needs externally known execution context.

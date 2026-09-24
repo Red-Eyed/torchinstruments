@@ -9,8 +9,9 @@ from typing import Literal, cast
 
 import torch
 
-from torchinstruments.records import JsonSetting
+from torchinstruments.records import Absent, JsonSetting
 from torchinstruments.reducers.base import ReducedScalar, Reducer, ReductionResult
+from torchinstruments.reducers.quantiles import exact_quartiles
 
 _MetricName = Literal[
     "mean",
@@ -20,6 +21,7 @@ _MetricName = Literal[
     "maximum",
     "max_abs",
     "finite_fraction",
+    "nonfinite_fraction",
     "zero_fraction",
     "p25",
     "median",
@@ -60,20 +62,14 @@ class _CompactStatistics:
                 "std",
                 "minimum",
                 "maximum",
-                "p25",
-                "median",
-                "p75",
                 "zero_fraction",
-                "finite_fraction",
+                "nonfinite_fraction",
             ),
         )
-        names = {"minimum": "min", "maximum": "max", "median": "p50"}
+        names = {"minimum": "min", "maximum": "max"}
         result: dict[str, ReducedScalar] = {
-            names.get(name, name): value
-            for name, value in source.items()
-            if name != "finite_fraction"
+            names.get(name, name): value for name, value in source.items()
         }
-        result["nonfinite_fraction"] = 1 - source["finite_fraction"]
         return result
 
     def reducer_type(self) -> str:
@@ -88,9 +84,6 @@ class _CompactStatistics:
                 "std",
                 "min",
                 "max",
-                "p25",
-                "p50",
-                "p75",
                 "zero_fraction",
                 "nonfinite_fraction",
             )
@@ -99,7 +92,25 @@ class _CompactStatistics:
 
 def default_reducers() -> tuple[Reducer, ...]:
     """Return a compact distribution profile for every sampled tensor."""
-    return (_CompactStatistics(),)
+    return (_CompactStatistics(), _QuartileStatistics())
+
+
+@dataclass(frozen=True)
+class _QuartileStatistics:
+    """Keep quartile failures independent of moments and invalid-value counts."""
+
+    def __call__(self, tensor: torch.Tensor) -> dict[str, ReducedScalar]:
+        """Return exact finite-entry quartiles using public percentile names."""
+        values = _statistics(tensor, ("p25", "median", "p75"))
+        return {"p25": values["p25"], "p50": values["median"], "p75": values["p75"]}
+
+    def reducer_type(self) -> str:
+        """Identify the independently recoverable quartile reducer."""
+        return "quartiles"
+
+    def reducer_settings(self) -> dict[str, JsonSetting]:
+        """Expose expected names even when quartiles cannot be measured."""
+        return {"metrics": ("p25", "p50", "p75")}
 
 
 def mean() -> Reducer:
@@ -178,10 +189,14 @@ def _statistics(
     statistics: dict[str, torch.Tensor] = {}
     if "finite_fraction" in requested:
         statistics["finite_fraction"] = finite_mask.to(values.dtype).mean()
+    if "nonfinite_fraction" in requested:
+        statistics["nonfinite_fraction"] = (~finite_mask).sum() / values.numel()
     if "zero_fraction" in requested:
         statistics["zero_fraction"] = (finite_mask & (values == 0)).to(values.dtype).mean()
     numerical = tuple(
-        name for name in requested if name not in {"finite_fraction", "zero_fraction"}
+        name
+        for name in requested
+        if name not in {"finite_fraction", "nonfinite_fraction", "zero_fraction"}
     )
     if not numerical:
         return statistics
@@ -226,6 +241,9 @@ def _quantiles(values: torch.Tensor, requested: tuple[_MetricName, ...]) -> dict
     names = [name for name in probabilities if name in requested]
     if not names:
         return {}
+    if values.numel() > 2**24:
+        quartiles = exact_quartiles(values)
+        return {name: quartiles[name] for name in names}
     levels = torch.tensor(
         [probabilities[name] for name in names], device=values.device, dtype=values.dtype
     )
@@ -251,6 +269,9 @@ def _materialize_scalars(values: dict[str, ReducedScalar]) -> ReductionResult:
     tensor_groups: dict[torch.device, list[tuple[str, torch.Tensor]]] = {}
 
     for name, value in values.items():
+        if isinstance(value, Absent):
+            unavailable_stats[name] = value.reason
+            continue
         if isinstance(value, torch.Tensor):
             if value.numel() != 1:
                 raise ValueError(f"reducer metric {name!r} must be scalar")

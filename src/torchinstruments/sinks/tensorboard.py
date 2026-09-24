@@ -116,7 +116,7 @@ def _sample_histograms(
                     module_name,
                     call.call_index,
                     tensors,
-                    prefix=prefix,
+                    prefix=f"{prefix}/{call.context.mode.value}/grad_enabled_{str(call.context.grad_enabled).lower()}",
                 )
             )
     return records

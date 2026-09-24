@@ -10,14 +10,16 @@ import weakref
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import partial
 from importlib.metadata import version as package_version
 
 import torch
 from torch import nn
-from torch.utils.hooks import RemovableHandle
 
 from torchinstruments.capture import CallCapture, CaptureCallbacks
 from torchinstruments.errors import ErrorPolicy
+from torchinstruments.gradient_capture import FirstBackward
+from torchinstruments.isolated_measurement import IsolatedMeasurement
 from torchinstruments.measurement import Measurements
 from torchinstruments.pytree import iter_tensor_leaves
 from torchinstruments.records import (
@@ -25,6 +27,7 @@ from torchinstruments.records import (
     Absent,
     CollectionRecord,
     ErrorRecord,
+    ExecutionContext,
     ModuleCallRecord,
     ModuleRecord,
     ReducerRecord,
@@ -52,19 +55,12 @@ class _GradientBinding:
     path: str
 
 
-@dataclass(frozen=True)
-class _GradientTarget:
-    """Group every telemetry path that aliases the same graph tensor."""
-
-    tensor: torch.Tensor
-    bindings: tuple[_GradientBinding, ...]
-
-
 @dataclass
 class _MutableModuleCall:
     """Accumulate compact records for one selected module invocation."""
 
     call_index: int
+    context: ExecutionContext
     outputs: dict[str, TensorRecord] = field(default_factory=dict)
     output_gradients: dict[str, TensorRecord] = field(default_factory=dict)
 
@@ -78,6 +74,7 @@ class _SampleBuilder:
         sample_id: int,
         forward_index: int,
         timestamp: datetime,
+        on_backward: Callable[[_SampleBuilder], None],
     ) -> None:
         """Initialize compact mutable state for one sampled root forward."""
         self.sample_id = sample_id
@@ -88,54 +85,27 @@ class _SampleBuilder:
         self.module_calls: dict[str, list[_MutableModuleCall]] = {}
         self.errors: list[ErrorRecord] = []
         self._reported_error_count = 0
-        self._gradient_targets: list[tuple[torch.Tensor, _GradientBinding]] = []
+        self.gradients = FirstBackward(partial(on_backward, self))
         self._lock = threading.Lock()
 
-    def add_module_call(self, module_name: str) -> _MutableModuleCall:
+    def add_module_call(self, module_name: str, execution: ExecutionContext) -> _MutableModuleCall:
         """Append and return the next ordered invocation for ``module_name``."""
         with self._lock:
             calls = self.module_calls.setdefault(module_name, [])
-            call = _MutableModuleCall(call_index=len(calls))
+            call = _MutableModuleCall(call_index=len(calls), context=execution)
             calls.append(call)
             return call
 
-    def add_output(
-        self,
-        module_name: str,
-        call: _MutableModuleCall,
-        path: str,
-        tensor: torch.Tensor,
-        record: TensorRecord,
-    ) -> None:
-        """Store an output record and retain its short-lived gradient binding."""
+    def add_output(self, call: _MutableModuleCall, path: str, record: TensorRecord) -> None:
+        """Store a compact output independently of its gradient registration."""
         with self._lock:
             call.outputs[path] = record
-            if tensor.requires_grad:
-                gradient_path = path.replace("output", "grad_output", 1)
-                binding = _GradientBinding(module_name, call.call_index, gradient_path)
-                self._gradient_targets.append((tensor, binding))
 
     def add_output_gradient(self, binding: _GradientBinding, record: TensorRecord) -> None:
         """Attach a compact gradient record to its exact module invocation."""
         with self._lock:
             call = self.module_calls[binding.module_name][binding.call_index]
             call.output_gradients[binding.path] = record
-
-    def take_gradient_targets(self) -> tuple[_GradientTarget, ...]:
-        """Deduplicate aliased tensors and release builder-owned raw references."""
-        with self._lock:
-            grouped: dict[int, tuple[torch.Tensor, list[_GradientBinding]]] = {}
-            for tensor, binding in self._gradient_targets:
-                identity = id(tensor)
-                if identity not in grouped:
-                    grouped[identity] = (tensor, [])
-                grouped[identity][1].append(binding)
-            self._gradient_targets.clear()
-
-        return tuple(
-            _GradientTarget(tensor=tensor, bindings=tuple(bindings))
-            for tensor, bindings in grouped.values()
-        )
 
     def add_collection_duration(self, duration_ns: int) -> None:
         """Accumulate observer reduction time in monotonic nanoseconds."""
@@ -159,6 +129,7 @@ class _SampleBuilder:
                 module_name: tuple(
                     ModuleCallRecord(
                         call_index=call.call_index,
+                        context=call.context,
                         outputs=dict(call.outputs),
                         output_gradients=dict(call.output_gradients),
                     )
@@ -214,7 +185,7 @@ class Observer:
         self._sink_lock = threading.Lock()
         # Weak ownership lets completed or abandoned graphs release callback handles naturally,
         # while still allowing explicit observer removal to detach live callbacks.
-        self._gradient_hook_handles: weakref.WeakSet[RemovableHandle] = weakref.WeakSet()
+        self._gradient_hook_handles: weakref.WeakSet[FirstBackward] = weakref.WeakSet()
         self._gradient_handles_lock = threading.Lock()
         self._contexts: contextvars.ContextVar[tuple[object, ...]] = contextvars.ContextVar(
             f"torchinstruments_context_{id(self)}", default=()
@@ -344,7 +315,10 @@ class Observer:
                 sample_id=self._next_sample_id(),
                 forward_index=forward_index,
                 timestamp=self._wall_clock(),
+                on_backward=self._finish_backward,
             )
+            with self._gradient_handles_lock:
+                self._gradient_hook_handles.add(context.gradients)
 
         stack = self._contexts.get()
         self._contexts.set((*stack, context))
@@ -360,12 +334,11 @@ class Observer:
         if not isinstance(context, _SampleBuilder):
             return
 
-        targets = context.take_gradient_targets()
-        if targets:
-            self._register_gradient_hook(context, targets)
         self._emit_sample(context)
 
-    def _collect_module_output(self, module_name: str, output: object) -> None:
+    def _collect_module_output(
+        self, module_name: str, execution: ExecutionContext, output: object
+    ) -> None:
         """Reduce one selected output only while its root context is sampled."""
         stack = self._contexts.get()
         if not stack:
@@ -375,15 +348,29 @@ class Observer:
             return
 
         started_at = self._performance_clock()
-        call = context.add_module_call(module_name)
+        call = context.add_module_call(module_name, execution)
         try:
             for leaf in iter_tensor_leaves(output, "output"):
                 try:
-                    record = self._measurements.by_module[module_name](
+                    binding = _GradientBinding(
+                        module_name, call.call_index, leaf.path.replace("output", "grad_output", 1)
+                    )
+                    context.gradients.attach(
+                        leaf.tensor, partial(self._collect_gradient, context, binding)
+                    )
+                    record = IsolatedMeasurement(
+                        self._measurements.by_module[module_name],
+                        partial(
+                            self._handle_error,
+                            builder=context,
+                            module_name=module_name,
+                            probe=leaf.path,
+                        ),
+                    )(
                         leaf.tensor,
                         sample_id=context.sample_id,
                     )
-                    context.add_output(module_name, call, leaf.path, leaf.tensor, record)
+                    context.add_output(call, leaf.path, record)
                 except Exception as error:
                     self._handle_error(
                         error,
@@ -394,75 +381,35 @@ class Observer:
         finally:
             context.add_collection_duration(self._performance_clock() - started_at)
 
-    def _register_gradient_hook(
-        self,
-        builder: _SampleBuilder,
-        targets: tuple[_GradientTarget, ...],
+    def _collect_gradient(
+        self, builder: _SampleBuilder, binding: _GradientBinding, gradient: torch.Tensor
     ) -> None:
-        """Bind compact gradient collection to the exact sampled autograd graph."""
-        fired_lock = threading.Lock()
-        fired = False
-        handle: RemovableHandle
-        bindings = tuple(target.bindings for target in targets)
-
-        def collect_gradients(gradients: Sequence[torch.Tensor | None]) -> None:
-            """Emit available output gradients from the first correlated backward."""
-            nonlocal fired
-            with fired_lock:
-                if fired:
-                    return
-                fired = True
-
-            started_at = self._performance_clock()
-            try:
-                for target_bindings, gradient in zip(bindings, gradients, strict=True):
-                    if gradient is None:
-                        continue
-                    for binding in target_bindings:
-                        try:
-                            builder.add_output_gradient(
-                                binding,
-                                self._measurements.by_module[binding.module_name](
-                                    gradient,
-                                    sample_id=builder.sample_id,
-                                ),
-                            )
-                        except Exception as error:
-                            self._handle_error(
-                                error,
-                                builder=builder,
-                                module_name=binding.module_name,
-                                probe=binding.path,
-                            )
-                builder.mark_backward_observed()
-            finally:
-                builder.add_collection_duration(self._performance_clock() - started_at)
-                self._discard_gradient_handle(handle)
-
-            self._emit_sample(builder)
-
-        tensors = tuple(target.tensor for target in targets)
+        """Measure the gradient bound to one original module invocation."""
+        started_at = self._performance_clock()
         try:
-            # A graph-local hook is the correlation token between one sampled forward and its
-            # backward; a module-global backward hook cannot encode that ownership.
-            handle = torch.autograd.graph.register_multi_grad_hook(tensors, collect_gradients)
+            record = IsolatedMeasurement(
+                self._measurements.by_module[binding.module_name],
+                partial(
+                    self._handle_error,
+                    builder=builder,
+                    module_name=binding.module_name,
+                    probe=binding.path,
+                ),
+            )(gradient, sample_id=builder.sample_id)
+            builder.add_output_gradient(binding, record)
         except Exception as error:
             self._handle_error(
-                error,
-                builder=builder,
-                module_name=Absent("gradient hook registration is run-level"),
-                probe="gradient_hook_registration",
+                error, builder=builder, module_name=binding.module_name, probe=binding.path
             )
-            return
+        finally:
+            builder.add_collection_duration(self._performance_clock() - started_at)
 
+    def _finish_backward(self, builder: _SampleBuilder) -> None:
+        """Publish the complete first backward after all participating edges finish."""
+        builder.mark_backward_observed()
         with self._gradient_handles_lock:
-            self._gradient_hook_handles.add(handle)
-
-    def _discard_gradient_handle(self, handle: RemovableHandle) -> None:
-        """Detach and forget a graph callback after its one supported backward."""
-        handle.remove()
-        with self._gradient_handles_lock:
-            self._gradient_hook_handles.discard(handle)
+            self._gradient_hook_handles.discard(builder.gradients)
+        self._emit_sample(builder)
 
     def _next_forward_index(self) -> int:
         """Allocate a thread-safe index for every root forward, sampled or not."""

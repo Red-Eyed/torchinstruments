@@ -2,6 +2,45 @@
 
 All notable changes to TorchInstruments are documented here.
 
+## [Unreleased]
+
+## [0.9.0] - 2026-09-24
+
+### Backwards Incompatible Changes
+
+- Add `mode` and `grad_enabled` to Parquet observations and JSON tensor identities (schema 7).
+  Include both in queries and grouping keys. TensorBoard tags now include these contexts.
+  Older histories require their matching reader or an explicit migration using known context;
+  the new reader never infers training mode from absent gradients.
+- Sample the first forward immediately under the default timed sampler, then apply the existing
+  interval. Short evaluation runs now produce measurements without a custom sampler.
+
+### Bug Fixes
+
+- Bind output gradients before downstream in-place operations can change their gradient edge.
+  Preserve original sample identity and publish only the first backward, including autograd.grad.
+- Compute exact quartiles above torch.quantile's element limit using order-statistic selection.
+- Keep successful scalar and histogram measurements when another reducer fails under warn/ignore;
+  preserve reasons for unavailable quartiles and histograms. Explicit raise still propagates errors.
+- Support native MPS histogram collection without float64 operations; retain integer counts and
+  use float32 moments on that backend.
+- Count nonfinite entries directly so rare invalid values do not disappear through subtraction
+  from a rounded finite fraction.
+
+### Documentation
+
+- Simplify the README and ordinary example around interval and output directory; preserve the
+  existing API and imports. Reduce Lightning telemetry settings to one interval and the benchmark
+  CLI to three fixed workloads without dimension-tuning flags.
+- Attach telemetry inside the Lightning model's `on_fit_start()` using `self.trainer.logger`,
+  with cleanup in `on_fit_end()` and a failure cleanup fallback.
+- State the tested non-reentrant checkpoint behavior and unsupported reentrant internal gradient
+  capture. Persist the original no-grad context instead of guessing recomputation ownership.
+- Document raw loss-scaled gradient semantics, train/eval separation, and schema migration.
+- Add a reproducible benchmark CLI and local CPU/MPS measurements, including large activations,
+  1,000 modules, and 900,000-row histories. Every-forward overhead and native memory growth remain
+  limitations; no CUDA performance claim is made.
+
 ## [0.8.0] - 2026-09-24
 
 ### Backwards Incompatible Changes

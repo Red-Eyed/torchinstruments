@@ -10,7 +10,6 @@ import torch
 from torch import nn
 
 from torchinstruments import (
-    AlwaysSampler,
     ObserverAlreadyAttachedError,
     inject_observer,
     remove_observer,
@@ -24,7 +23,7 @@ def test_injection_does_not_change_state_dict(
     """Keep every checkpoint key and tensor unchanged after injection."""
     before = {name: value.clone() for name, value in linear_model.state_dict().items()}
 
-    result = inject_observer(linear_model, sampler=AlwaysSampler(), output_dir=telemetry_dir)
+    result = inject_observer(linear_model, output_dir=telemetry_dir)
 
     after = linear_model.state_dict()
     assert result is None
@@ -41,7 +40,7 @@ def test_forward_output_is_bit_identical(
     """Preserve model outputs bit-for-bit while sampled hooks are active."""
     inputs = torch.randn(2, 4)
     expected = linear_model(inputs)
-    inject_observer(linear_model, sampler=AlwaysSampler(), output_dir=telemetry_dir)
+    inject_observer(linear_model, output_dir=telemetry_dir)
 
     actual = linear_model(inputs)
 
@@ -59,7 +58,7 @@ def test_gradients_are_unchanged(
     inputs = torch.randn(2, 4)
 
     baseline(inputs).square().sum().backward()
-    inject_observer(observed, sampler=AlwaysSampler(), output_dir=telemetry_dir)
+    inject_observer(observed, output_dir=telemetry_dir)
     observed(inputs).square().sum().backward()
 
     for baseline_parameter, observed_parameter in zip(
@@ -77,12 +76,11 @@ def test_duplicate_injection_is_rejected(
     telemetry_dir: Path,
 ) -> None:
     """Reject a second observer instead of silently duplicating hooks."""
-    inject_observer(linear_model, sampler=AlwaysSampler(), output_dir=telemetry_dir)
+    inject_observer(linear_model, output_dir=telemetry_dir)
 
     with pytest.raises(ObserverAlreadyAttachedError, match="already has"):
         inject_observer(
             linear_model,
-            sampler=AlwaysSampler(),
             output_dir=telemetry_dir / "duplicate",
         )
 

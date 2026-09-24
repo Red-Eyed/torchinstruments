@@ -17,14 +17,19 @@ optimizer steps.
 ## Architecture
 
 - `api.py` selects modules and binds per-module `TensorMeasurement` plans at attachment.
-- `observer.py` owns root-forward contexts and graph-local backward correlation. Shared calls,
+- `observer.py` owns root-forward contexts; `gradient_capture.py` binds tensor hooks before
+  in-place mutation and uses an engine completion callback for first-backward publication. Shared calls,
   nested outputs, and multiple outstanding forwards must remain distinct.
 - `capture.py` provides native hooks and reversible direct-forward wrappers.
 - `reducers/` computes finite-value statistics and independently sampled histograms on-device.
 - `history/records.py` defines typed scalar observations. `history/parquet.py` buffers compact
   rows into completed chunks using Polars and streams them into history.parquet on close.
-- `history/summary.py` uses Polars expressions for endpoints, extrema, and adjacent windows,
+- `history/summary.py` uses Polars expressions for history distributions and adjacent window means,
   then groups them by layer and exports result.json with the Polars serializer.
+- Module mode and autograd recording context are captured at invocation and retained through
+  delayed backward. History identities and dashboard tags separate these contexts.
+- `isolated_measurement.py` wraps reducers with the observer's error policy so failures in one
+  reducer do not discard successful siblings. Exact quartiles use selection above the size limit.
 - `DirectorySink` owns Parquet, JSON, the LLM guide, and its TensorBoard writer. Extra supplied
   sinks receive events as well. Externally supplied loggers remain caller-owned.
 - `index.md` explains the live chunk location, final files, schema, counts, errors, and queries.

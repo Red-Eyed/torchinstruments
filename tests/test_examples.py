@@ -21,7 +21,7 @@ def test_basic_example_writes_all_artifacts(tmp_path: Path) -> None:
         "tensorboard",
     }
     history = pl.read_parquet(output / "history.parquet")
-    assert history["sample_id"].n_unique() == 3
+    assert history["sample_id"].n_unique() == 1
     assert history["layer"].n_unique() == 3
     assert set(history["signal"]) == {"output", "output_gradient"}
 

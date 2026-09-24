@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from types import MethodType
 from typing import Protocol
 
+import torch
 from torch import nn
 from torch.utils.hooks import RemovableHandle
+
+from torchinstruments.records import ExecutionContext, ModuleMode
 
 _MISSING = object()
 
@@ -20,7 +24,7 @@ class CaptureCallbacks:
 
     start_root: Callable[[], None]
     finish_root: Callable[[], None]
-    observe_output: Callable[[str, object], None]
+    observe_output: Callable[[str, ExecutionContext, object], None]
 
 
 class CallCapture(Protocol):
@@ -67,10 +71,7 @@ class HookCallCapture:
 
         try:
             for module_name, module in selected_modules:
-                handle = module.register_forward_hook(
-                    self._output_hook(module_name, callbacks.observe_output)
-                )
-                self._handles.append(handle)
+                self._attach_module(module_name, module, callbacks.observe_output)
             self._handles.append(model.register_forward_pre_hook(self._root_pre_hook(callbacks)))
             self._handles.append(
                 model.register_forward_hook(self._root_post_hook(callbacks), always_call=True)
@@ -85,18 +86,31 @@ class HookCallCapture:
             handle.remove()
         self._handles.clear()
 
-    def _output_hook(
+    def _attach_module(
         self,
-        module_name: str,
-        observe_output: Callable[[str, object], None],
-    ) -> Callable[[nn.Module, tuple[object, ...], object], None]:
-        """Adapt a named observer callback to PyTorch's forward-hook signature."""
+        name: str,
+        module: nn.Module,
+        observe: Callable[[str, ExecutionContext, object], None],
+    ) -> None:
+        """Bind invocation context before execution, including nested calls and failures."""
+        contexts: ContextVar[tuple[ExecutionContext, ...]] = ContextVar(
+            f"module_context_{id(module)}", default=()
+        )
 
-        def collect(_module: nn.Module, _inputs: tuple[object, ...], output: object) -> None:
-            """Forward one completed selected-module output to the observer."""
-            observe_output(module_name, output)
+        def start(current: nn.Module, _inputs: tuple[object, ...]) -> None:
+            """Snapshot mode before a module can change it inside forward."""
+            contexts.set((*contexts.get(), _execution_context(current)))
 
-        return collect
+        def finish(_module: nn.Module, _inputs: tuple[object, ...], output: object) -> None:
+            """Restore the surrounding context even after a failed forward."""
+            stack = contexts.get()
+            if not stack:
+                return
+            contexts.set(stack[:-1])
+            observe(name, stack[-1], output)
+
+        self._handles.append(module.register_forward_pre_hook(start))
+        self._handles.append(module.register_forward_hook(finish, always_call=True))
 
     def _root_pre_hook(
         self,
@@ -195,7 +209,7 @@ class ForwardCallCapture:
         self,
         module: nn.Module,
         module_name: str,
-        observe_output: Callable[[str, object], None],
+        observe_output: Callable[[str, ExecutionContext, object], None],
     ) -> None:
         """Wrap one selected child and report its successful output."""
         original_forward = module.forward
@@ -203,8 +217,9 @@ class ForwardCallCapture:
         @functools.wraps(original_forward)
         def wrapped(_module: nn.Module, *args: object, **kwargs: object) -> object:
             """Execute the original child forward and report its output once."""
+            context = _execution_context(_module)
             output = original_forward(*args, **kwargs)
-            observe_output(module_name, output)
+            observe_output(module_name, context, output)
             return output
 
         self._install_patch(module, MethodType(wrapped, module))
@@ -221,11 +236,12 @@ class ForwardCallCapture:
         @functools.wraps(original_forward)
         def wrapped(_module: nn.Module, *args: object, **kwargs: object) -> object:
             """Run one root forward inside an observer lifecycle context."""
+            context = _execution_context(_module)
             callbacks.start_root()
             try:
                 output = original_forward(*args, **kwargs)
                 if isinstance(selected_root_name, str):
-                    callbacks.observe_output(selected_root_name, output)
+                    callbacks.observe_output(selected_root_name, context, output)
                 return output
             finally:
                 callbacks.finish_root()
@@ -243,3 +259,10 @@ class ForwardCallCapture:
                 previous_instance_forward=previous_instance_forward,
             )
         )
+
+
+def _execution_context(module: nn.Module) -> ExecutionContext:
+    """Snapshot module mode separately from autograd recording."""
+    return ExecutionContext(
+        ModuleMode.TRAIN if module.training else ModuleMode.EVAL, torch.is_grad_enabled()
+    )

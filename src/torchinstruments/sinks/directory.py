@@ -12,7 +12,14 @@ from torchinstruments.errors import SinkAlreadyInitializedError
 from torchinstruments.history.parquet import ParquetHistory
 from torchinstruments.history.records import observations
 from torchinstruments.history.summary import HistoryConfig, write_result
-from torchinstruments.records import ErrorRecord, ModuleRecord, RunRecord, SampleRecord, SampleState
+from torchinstruments.records import (
+    ErrorRecord,
+    ModuleCallRecord,
+    ModuleRecord,
+    RunRecord,
+    SampleRecord,
+    SampleState,
+)
 from torchinstruments.sinks.files import write_text_atomic
 from torchinstruments.sinks.tensorboard import TensorBoardSink
 
@@ -79,13 +86,43 @@ class DirectorySink:
             self._history.append(observation)
         self._history.flush()
         for error in sample.errors:
-            if len(self._errors) < 100:
-                self._errors.append(replace(error, message=error.message[:500]))
-            else:
-                self._errors_omitted += 1
+            self._remember_error(error)
+        self._remember_unavailable_histograms(sample)
         self._dashboard.observe(sample)
         self._writer.flush()
         self._publish_index(closed=False)
+
+    def _remember_error(self, error: ErrorRecord) -> None:
+        """Bound retained failure detail independently of run length."""
+        if len(self._errors) < 100:
+            self._errors.append(replace(error, message=error.message[:500]))
+        else:
+            self._errors_omitted += 1
+
+    def _remember_unavailable_histograms(self, sample: SampleRecord) -> None:
+        """Keep numerical histogram gaps visible after transient records are discarded."""
+        for name, calls in sample.modules.items():
+            for call in calls:
+                self._remember_call_histograms(name, call, sample)
+
+    def _remember_call_histograms(
+        self, name: str, call: ModuleCallRecord, sample: SampleRecord
+    ) -> None:
+        """Persist histogram absence only for the event's newly collected signal."""
+        tensors = (
+            call.outputs if sample.state is SampleState.FORWARD_COMPLETE else call.output_gradients
+        )
+        for path, tensor in tensors.items():
+            for histogram, reason in tensor.unavailable_histograms.items():
+                self._remember_error(
+                    ErrorRecord(
+                        sample.timestamp,
+                        name,
+                        f"{path}/histograms/{histogram}",
+                        "HistogramUnavailable",
+                        reason,
+                    )
+                )
 
     def close(self) -> None:
         """Finalize history with a streaming Polars pass and close the owned writer."""
@@ -110,12 +147,15 @@ class DirectorySink:
     def _publish_index(self, *, closed: bool) -> None:
         """Refresh live counts and errors without rescanning historical measurements."""
         metadata = (
+            f"\nSchema: {self._run.schema_version}; TorchInstruments: "
+            f"{self._run.observer_version}; PyTorch: {self._run.torch_version}.\n"
             f"\n## Collection\n\nSampling: {self._run.sampling.type} "
             f"{self._run.sampling.settings}. "
             f"Rank: {self._rank.rank}/{self._rank.world_size}.\n"
             f"Forward samples: {self._samples}; backward samples: {self._backwards}.\n"
             f"Histogram layers: {self._run.collection.histogram_modules}.\n"
-            f"Collection errors: {len(self._errors) + self._errors_omitted}.\n"
+            f"Collection errors and unavailable histograms: "
+            f"{len(self._errors) + self._errors_omitted}.\n"
         )
         for error in self._errors:
             metadata += (
@@ -143,7 +183,10 @@ Observer removal streams those chunks into [history.parquet](history.parquet).
 After an interrupted run, query the remaining chunks directly.
 
 Each Parquet row is one statistic for one tensor observation. Identity columns are
-`layer`, `call_index`, `signal`, and `tensor_path`. `sample_id` and `forward_index`
+`layer`, `call_index`, `signal`, `tensor_path`, `mode`, and `grad_enabled`.
+`mode` is the selected module's train/eval mode at invocation; `grad_enabled` records
+autograd recording at that invocation. Delayed backwards retain this original context.
+`sample_id` and `forward_index`
 identify the originating forward, not an optimizer step. `timestamp` is its UTC time.
 `shape` and `dtype` describe that observation. `metric` names the statistic and
 `value` holds it. A missing value always has an `unavailable_reason`.
@@ -173,7 +216,7 @@ fractions use the original tensor size. Empty tensors have unavailable statistic
 These are tensor-wide statistics, not per-channel statistics.
 
 `result.json` is an array of layer records. Within each layer, tensors are separated
-by call, signal, and tensor path.
+by call, signal, tensor path, module mode, and autograd recording context.
 `statistics` maps metric names to whole-history aggregates: observations, unavailable
 count, mean, population std, min, max, and linearly interpolated p25/p50/p75.
 Each observation has equal weight; unavailable values are excluded from numeric aggregates.
@@ -195,6 +238,12 @@ Open with `tensorboard --logdir tensorboard`. Histogram steps are telemetry samp
 Histogram selection limits dashboard size; scalar history still covers all selected layers.
 Histograms describe finite entries; check nonfinite_fraction in the history as well.
 Missing gradients can mean no backward, an unused path, disabled gradients, or disconnection.
+Reentrant activation checkpointing's internal gradient capture is unsupported: its original
+internal forwards have grad_enabled=false and recomputation is not assigned a guessed sample.
+Non-reentrant checkpointing is covered by regression tests. No-grad output observations are
+visible coverage limitations, never evidence that the model's parameter gradients are absent.
+Only the first backward per sampled forward is recorded. AMP loss scaling also scales these
+raw output gradients; the observer does not normalize them to optimizer or parameter gradients.
 An observed output gradient is not a parameter gradient. These measurements alone cannot
 establish a cause of task loss or accuracy changes. Use matched runs to test hypotheses.
 '''

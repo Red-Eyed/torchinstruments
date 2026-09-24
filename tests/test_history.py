@@ -15,7 +15,7 @@ from torchinstruments import AlwaysSampler, HistoryConfig, inject_observer, remo
 from torchinstruments.history.parquet import ParquetHistory
 from torchinstruments.history.records import Observation, Signal
 from torchinstruments.history.summary import aggregate_history
-from torchinstruments.records import Absent
+from torchinstruments.records import Absent, ExecutionContext, ModuleMode
 
 
 def summary_metrics(path: Path) -> pl.DataFrame:
@@ -267,6 +267,7 @@ def test_parquet_chunks_enforce_buffer_bound(tmp_path: Path) -> None:
                 "float32",
                 "mean",
                 float(sample),
+                ExecutionContext(ModuleMode.TRAIN, True),
             )
         )
     history.append(
@@ -282,6 +283,7 @@ def test_parquet_chunks_enforce_buffer_bound(tmp_path: Path) -> None:
             "float32",
             "mean",
             Absent("empty"),
+            ExecutionContext(ModuleMode.TRAIN, True),
         )
     )
     history.flush()

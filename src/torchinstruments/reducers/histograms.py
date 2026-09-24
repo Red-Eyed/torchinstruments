@@ -196,26 +196,14 @@ def _reduce_histogram(
     finite_count = finite_mask.sum()
     nonfinite_count = finite_mask.numel() - finite_count
 
-    moments = finite_values.to(dtype=torch.float64)
-    compact = torch.cat(
-        (
-            edges.to(dtype=torch.float64),
-            counts.to(dtype=torch.float64),
-            torch.stack(
-                (
-                    finite_count.to(dtype=torch.float64),
-                    nonfinite_count.to(dtype=torch.float64),
-                    underflow.to(dtype=torch.float64),
-                    overflow.to(dtype=torch.float64),
-                    minimum.to(dtype=torch.float64),
-                    maximum.to(dtype=torch.float64),
-                    moments.sum(),
-                    moments.square().sum(),
-                )
-            ),
-        )
-    )
-    materialized = compact.cpu().tolist()
+    moment_dtype = torch.float32 if values.device.type == "mps" else torch.float64
+    moments = finite_values.to(dtype=moment_dtype)
+    totals = torch.stack((minimum, maximum, moments.sum(), moments.square().sum()))
+    # Integer transfers preserve exact counts even on devices without float64 support.
+    sizes = torch.stack((finite_count, nonfinite_count, underflow, overflow))
+    integer_values = torch.cat((counts, sizes)).cpu().tolist()
+    floating_values = torch.cat((edges.to(moment_dtype), totals)).cpu().tolist()
+    materialized = [*floating_values[: bins + 1], *integer_values, *floating_values[bins + 1 :]]
     return _build_record(materialized, bins)
 
 
