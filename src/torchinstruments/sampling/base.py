@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -33,6 +32,6 @@ class DescribedSamplingPolicy(Protocol):
         """Return the stable policy type written to run metadata."""
         ...
 
-    def sampling_settings(self) -> Mapping[str, JsonScalar]:
+    def sampling_settings(self) -> dict[str, JsonScalar]:
         """Return JSON-compatible policy settings written once per run."""
         ...

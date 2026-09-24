@@ -1,243 +1,147 @@
 # TorchInstruments
 
-**Turn “accuracy stalled” into a small, evidence-backed list of model problems to investigate.**
-
-Loss and accuracy curves say that a run changed. TorchInstruments observes selected-module
-activations and output gradients, ranks suspicious internal behavior locally, and writes a bounded
-research report while training continues normally.
-
-```text
-inject once  →  train normally  →  read a bounded report  →  run a narrower experiment
-```
-
-## Quick start
+Record activation and output-gradient statistics from a PyTorch model without changing its
+training loop. Keep the sampled history in Parquet, inspect per-layer summaries in JSON,
+and investigate selected layers with TensorBoard histograms.
 
 ```python
-from torchinstruments import inject_observer
+from torchinstruments import inject_observer, remove_observer
 
 inject_observer(model, output_dir="stats")
-train(model)
+try:
+    train(model)
+finally:
+    remove_observer(model)
 ```
 
-There is no observer call inside the training loop. The default output is deliberately small:
+Every run produces:
 
 ```text
 stats/
-    index.md       # Human-readable findings and analysis prompt
-    report.json    # Typed LLM input, at most 256 KB by default
+    history.parquet    # All successfully collected scalar measurements
+    result.json        # History aggregated by layer, call, signal, and tensor path
+    index.md           # Schema, sampling information, and queries for an LLM
+    tensorboard/       # Histograms for the configured focus layers
 ```
 
-No database, binary event format, raw tensor, per-sample file, or exhaustive 200 MB JSON document
-is part of the default workflow.
-
-## What you get
-
-Suppose a model modification hurts validation accuracy. The report can provide evidence such as:
-
-> **Gradient scale change #1:** `encoder.blocks.7.proj`, call 0, `grad_output.rms` fell from
-> `0.0081` to `0.0002`. Relative movement, EMA divergence, momentum, and drawdown all rank this
-> path above the other observed gradients. The series has completed warm-up.
->
-> **Measured interpretation:** gradient scale weakened at this observed boundary.
->
-> **Next experiment:** restore the previous normalization or residual scale at block 7 only,
-> while preserving seed, data order, and precision.
-
-TorchInstruments narrows the hypothesis space. It does not claim that correlation proves why the
-task metric changed.
-
-## The report is ranked before the LLM sees it
-
-Sending a 200 MB telemetry file to an LLM can cost tens of millions of tokens. TorchInstruments
-therefore performs deterministic searching and ranking in Python. Independent categories include:
-
-- activation-scale drift;
-- output-gradient scale change;
-- heavy-tail and outlier growth;
-- non-finite values;
-- zero-fraction growth;
-- relative volatility;
-- oscillation;
-- CUSUM regime-change evidence.
-
-Each finding contains the exact module, call index, signal, tensor path, metric, first/latest and
-extreme measurements, warm-up status, category-specific ranking basis, and supporting indicators.
-There is no opaque combined health score.
-
-Coverage fields report how many modules, tensor paths, temporal series, and histograms were
-observed; how many findings were returned or omitted; and whether byte or collection limits removed
-evidence.
-
-## Analyze with an LLM
-
-Give the LLM only `stats/index.md` and `stats/report.json`:
-
-```text
-Analyze the ranked TorchInstruments findings in report.json. For every material finding,
-cite the exact category, module, call index, signal, tensor path, metric, values, and evidence.
-Separate measured interpretation from plausible mechanisms. State missing evidence and propose
-the smallest controlled experiment. Treat warmup_complete=false as weak temporal evidence.
-Do not infer losses, labels, optimizer updates, inputs, or parameter gradients that were not
-observed.
-```
-
-The generated `index.md` contains this prompt and a compact human rendering of the strongest
-findings, so the report remains useful without an LLM.
+During training, history is available as completed files in `history.parts/`. Removal combines
+these into `history.parquet` using Polars streaming and writes the final `result.json`.
+Before removal, `result.json` contains the selected layer catalog with empty measurements.
+If the process is interrupted, completed history chunks and flushed TensorBoard events remain
+readable. There is no automatic interpretation, ranking, problem classification, or health score.
 
 ## What is measured
 
-| Boundary | Default behavior |
-| --- | --- |
-| Sampling | First root forward after each 60-second monotonic interval |
-| Modules | Leaf modules, avoiding redundant container outputs |
-| Forward | Tensor leaves in selected-module outputs |
-| Backward | Gradients with respect to differentiable selected-module outputs |
-| Distribution | Scale, quantiles, skewness, kurtosis, tails, signs, zeros, and entropy |
-| Temporal behavior | EMA, momentum, slope, volatility, extrema, CUSUM, and oscillation |
-| Persistence | Bounded UTF-8 JSON and Markdown reports |
-| Errors | Warn and retain a bounded diagnostic summary |
+The default profile is **mean, population std, min, max, p25, p50, p75, zero fraction, and
+nonfinite fraction**. Statistics describe all finite entries of each sampled output tensor.
+Fractions use the original tensor size. Empty or entirely invalid tensors retain explicit
+unavailability reasons. Output gradients are measured separately and matched to their forward.
 
-The current release does not measure module inputs, `grad_input`, parameters, parameter gradients,
-losses, optimizer state, or optimizer updates.
+By default, leaf modules are observed at the first forward after each 60-second interval.
+Sampling units are root forwards, not optimizer steps. Inputs, parameter gradients, losses,
+and optimizer updates are not collected.
 
-## Configure the report budget
+Histograms are always enabled. By default they cover the first **eight observed modules** in
+traversal order, on every sampled forward and its observed backward. Scalar history covers every
+selected module. Focus the dashboard on layers you want to investigate:
 
 ```python
-from torchinstruments import ReportConfig, inject_observer
+from torchinstruments import EveryNForwardsSampler, HistoryConfig, inject_observer
 
 inject_observer(
     model,
     output_dir="stats",
-    report_config=ReportConfig(
-        max_bytes=128_000,
-        top_k_per_category=10,
-    ),
+    sampler=EveryNForwardsSampler(100),
+    histogram_selector=lambda name, module: name.startswith("encoder.blocks.7."),
+    max_histogram_modules=8,
+    history_config=HistoryConfig(buffer_rows=8192, window=20),
 )
 ```
 
-The byte limit is enforced against the exact indented UTF-8 JSON written to disk. Findings are
-selected round-robin across categories so one diagnostic question cannot consume the entire
-budget. Omitted counts remain visible.
+The histogram selector must match at least one observed module. Its limit applies to modules;
+shared calls and multiple tensor outputs have separate tags. Selection occurs before histogram
+reduction, so unselected modules pay no histogram cost. Histograms contain finite entries;
+inspect `nonfinite_fraction` to detect excluded invalid values.
 
-## Distributed training
+## Read the history with Polars
 
-The default `rank_policy="rank0"` instruments and writes only rank zero. Nonzero ranks register no
-hooks and perform no telemetry reductions or filesystem writes.
-
-When per-rank anomalies matter:
-
-```python
-inject_observer(model, output_dir="stats", rank_policy="all")
-```
-
-Every rank owns human- and LLM-readable files under an isolated directory:
-
-```text
-stats/
-    rank-000/index.md
-    rank-000/report.json
-    rank-001/index.md
-    rank-001/report.json
-```
-
-There are no shared writers, databases, or file locks. After rank reports exist, merge them without
-loading all reports at once:
+Parquet uses a long table: one row per scalar measurement. A tensor's metrics share the same
+layer, call index, signal, tensor path, and sample ID. A nullable value always has an
+`unavailable_reason`; it is never silently replaced with zero.
 
 ```python
-from torchinstruments import merge_rank_reports
+import polars as pl
 
-merge_rank_reports("stats")
-```
-
-This writes bounded `global-report.json` and `global-index.md`. The merged report states which
-ranks were present and whether any source report was truncated. The merger does not introduce a
-distributed barrier or assume every worker has finished.
-
-## Direct `forward()` calls
-
-Normal `module(...)` execution uses native PyTorch hooks. If model code literally calls
-`module.forward(...)`, enable reversible direct-forward capture:
-
-```python
-inject_observer(model, capture_direct_forwards=True)
-```
-
-The root and recursively selected modules are observed exactly once across mixed invocation
-styles. `remove_observer(model)` restores previous instance attributes.
-
-## Histograms, TensorBoard, and custom loggers
-
-Histograms remain opt-in because they are more expensive than scalar reductions:
-
-```python
-from torchinstruments import histogram, inject_observer
-
-inject_observer(
-    model,
-    histograms=[
-        histogram(
-            bins=64,
-            value_range=(-8.0, 8.0),
-            every_n_samples=10,
-        ),
-    ],
+trend = (
+    pl.scan_parquet("stats/history.parquet")
+    .filter(
+        (pl.col("layer") == "encoder.blocks.7.proj")
+        & (pl.col("signal") == "output_gradient")
+        & (pl.col("metric") == "std")
+    )
+    .select("sample_id", "timestamp", "call_index", "tensor_path", "value")
+    .sort("sample_id")
+    .collect()
 )
 ```
 
-`TensorBoardSink` and `MetricLoggerSink` project transient measurements to externally owned
-loggers. The tested Lightning MNIST example uses the same logger for task metrics and internal
-telemetry. Logger ownership remains with the caller.
+While training, scan `stats/history.parts/*.parquet` instead. Always order trends by `sample_id`:
+backward events may arrive in a different order from their forwards.
 
-Exhaustive live details are intentionally not written by default. Researchers who explicitly need
-every current tensor path for local debugging can construct
-`DirectorySink("stats", write_full_details=True)`. This creates `details.json`, can become very
-large, and should not be sent wholesale to an LLM.
+`result.json` is an array of layer records. Each tensor contains metric summaries with observation
+counts, first/latest values, finite extrema and their sample IDs, and two adjacent windows.
+Window means average sample statistics, **not pooled tensor distributions**: averaging batch
+medians does not produce the median of all tensor entries. Read each window's actual/valid counts.
+All selected layers are listed, including unexecuted layers; there is no byte-budget selection.
 
-## Examples and research workflow
+## Find a problem, then test a fix
+
+The [debugging examples](examples/README.md) reproduce inactive ReLUs, sigmoid saturation,
+growing scale, invalid arithmetic, and an accidentally detached branch. Each uses matched
+baseline, broken, and fixed runs, prints a Polars evidence table, and creates comparison plots.
+The fault starts after four healthy samples so its onset is visible.
 
 ```bash
-git clone https://github.com/Red-Eyed/torchinstruments.git
-cd torchinstruments
+uv run examples/find_problems.py
+```
+
+These examples demonstrate known interventions, not universal thresholds for unfamiliar models.
+See [research workflows](docs/research-workflows.md) for evidence and interpretation limits.
+
+## Integration and ownership
+
+`rank_policy="rank0"` is the default and attaches nothing on nonzero ranks. With
+`rank_policy="all"`, each rank writes all four artifacts under its own `rank-NNN/` directory.
+Compare ranks explicitly; summaries never silently average measurements across ranks.
+
+Use `capture_direct_forwards=True` for model code that calls `module.forward(...)` directly.
+Removal restores observer-owned overrides. Capture does not replace model outputs or gradients,
+and the observer never registers a parameter, buffer, or child module.
+
+A supplied `TensorBoardSink(logger)` additionally writes histograms into an existing logger.
+The logger remains caller-owned. The ordinary directory artifacts are still produced.
+The [Lightning example](examples/lightning_mnist.py) demonstrates this with a real MNIST model.
+
+Runtime dependencies are PyTorch, Polars, and TensorBoard. The ordinary training loop and
+telemetry remain trainer-independent. CPU behavior is tested; CUDA performance and
+`torch.compile` compatibility are not claimed.
+
+## Migration from 0.6
+
+`report.json`, ranked findings, `ReportConfig`, live indicator aggregation, scalar logger exports,
+and rank-report merging have been removed. Use `history.parquet`, `result.json`, and `HistoryConfig`.
+`DirectorySink` always produces all four artifacts; `write_full_details` is no longer supported.
+Custom scalar reducers and additional sinks remain supported.
+
+## Development
+
+```bash
 uv sync --dev
-uv run examples/basic_training.py
+uv run ruff check src tests examples
+uv run ruff format --check src tests examples
+uv run pyrefly check src tests examples
+uv run pytest
+uv build --wheel
 ```
 
-The [examples](https://github.com/Red-Eyed/torchinstruments/tree/main/examples) include an ordinary
-training loop and a real Lightning MNIST workflow with TensorBoard. See the
-[LLM analysis guide](https://github.com/Red-Eyed/torchinstruments/blob/main/docs/llm-analysis.md)
-and [research workflows](https://github.com/Red-Eyed/torchinstruments/blob/main/docs/research-workflows.md)
-for controlled baseline-versus-candidate investigations.
-
-## Safety and compatibility
-
-- Injection adds no parameters, buffers, or modules; `state_dict()` remains unchanged.
-- Outputs and gradients remain bit-identical in the test suite.
-- Unsampled callbacks perform only a cheap context lookup.
-- Raw activations and gradients are never persisted.
-- Report size, finding count, errors, temporal series, tensor paths, calls, and histograms have
-  explicit limits.
-- Python 3.11–3.14 and PyTorch 2.0+ are declared.
-- CUDA-performance, Accelerate, and `torch.compile` support remain unclaimed until dedicated tests
-  exist.
-
-The core wheel depends only on PyTorch and the Python standard library. Lightning, TensorBoard,
-torchvision, Dirty Equals, Ruff, Pyrefly, and pytest are development/example dependencies.
-
-## License
-
-TorchInstruments is released under the
-[MIT License](https://github.com/Red-Eyed/torchinstruments/blob/main/LICENSE).
-
-## Citation
-
-If TorchInstruments supports your research or engineering work, cite it as:
-
-```bibtex
-@software{stupakov_2026_torchinstruments,
-  author  = {Vadym Stupakov},
-  title   = {TorchInstruments: Passive PyTorch Model Telemetry},
-  year    = {2026},
-  version = {0.6.0},
-  url     = {https://github.com/Red-Eyed/torchinstruments}
-}
-```
+MIT licensed. Author: Vadym Stupakov <vadim.stupakov@gmail.com>.

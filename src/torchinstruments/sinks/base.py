@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Protocol
 
 from torchinstruments.records import ModuleRecord, RunRecord, SampleRecord
@@ -11,7 +10,7 @@ from torchinstruments.records import ModuleRecord, RunRecord, SampleRecord
 class Sink(Protocol):
     """Persist normalized records without coupling the observer to storage."""
 
-    def initialize(self, run: RunRecord, modules: Mapping[str, ModuleRecord]) -> None:
+    def initialize(self, run: RunRecord, modules: dict[str, ModuleRecord]) -> None:
         """Initialize one run and persist its immutable module catalog."""
         ...
 

@@ -6,11 +6,11 @@ import copy
 from enum import StrEnum
 from pathlib import Path
 
+import polars as pl
 import pytest
 import torch
 from torch import nn
 
-from tests.json_records import read_stats
 from torchinstruments import AlwaysSampler, DirectorySink, inject_observer, remove_observer
 
 
@@ -72,15 +72,13 @@ def test_forward_capture_supports_call_and_forward_exactly_once(
         torch.equal(state_before[name], value) for name, value in observed.state_dict().items()
     )
 
-    stats = read_stats(telemetry_dir / "details.json")
-    assert stats["run"]["collection"]["invocation_capture"] == "forward_wrappers"
-    calls = stats["layers"]["linear"]
-    assert len(calls) == 1
-    assert calls[0]["call_index"] == 0
-    assert calls[0]["outputs"]["output"]["shape"] == [2, 3]
-    assert calls[0]["output_gradients"]["grad_output"]["shape"] == [2, 3]
-
     remove_observer(observed)
+    history = pl.read_parquet(telemetry_dir / "history.parquet")
+    assert history["call_index"].unique().to_list() == [0]
+    assert history["layer"].unique().to_list() == ["linear"]
+    assert set(history["signal"]) == {"output", "output_gradient"}
+    assert history["shape"].to_list() == [[2, 3]] * history.height
+
     assert "forward" not in observed.__dict__
     assert "forward" not in observed.linear.__dict__
 

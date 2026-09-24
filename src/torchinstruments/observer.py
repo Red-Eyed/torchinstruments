@@ -7,7 +7,7 @@ import threading
 import time
 import warnings
 import weakref
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from importlib.metadata import version as package_version
@@ -18,6 +18,7 @@ from torch.utils.hooks import RemovableHandle
 
 from torchinstruments.capture import CallCapture, CaptureCallbacks
 from torchinstruments.errors import ErrorPolicy
+from torchinstruments.measurement import Measurements
 from torchinstruments.pytree import iter_tensor_leaves
 from torchinstruments.records import (
     SCHEMA_VERSION,
@@ -33,7 +34,6 @@ from torchinstruments.records import (
     SamplingRecord,
     TensorRecord,
 )
-from torchinstruments.reducers import HistogramReducer, Reducer, reduce_histograms, reduce_tensor
 from torchinstruments.reducers.base import DescribedReducer
 from torchinstruments.sampling import SamplingEvent, SamplingPolicy
 from torchinstruments.sampling.base import DescribedSamplingPolicy
@@ -189,8 +189,7 @@ class Observer:
         model: nn.Module,
         sampler: SamplingPolicy,
         selector: ModuleSelector,
-        reducers: Sequence[Reducer],
-        histograms: Sequence[HistogramReducer],
+        measurements: Measurements,
         sink: Sink,
         error_policy: ErrorPolicy,
         capture: CallCapture,
@@ -202,8 +201,7 @@ class Observer:
         self._model = model
         self._sampler = sampler
         self._selector = selector
-        self._reducers = tuple(reducers)
-        self._histogram_reducers = tuple(histograms)
+        self._measurements = measurements
         self._sink = sink
         self._error_policy = error_policy
         self._capture = capture
@@ -234,8 +232,13 @@ class Observer:
             collection=CollectionRecord(
                 invocation_capture=self._capture.capture_type(),
                 signals=("module_outputs", "module_output_gradients"),
-                scalar_reducers=self._reducer_records(self._reducers),
-                histogram_reducers=self._reducer_records(self._histogram_reducers),
+                scalar_reducers=self._reducer_records(self._measurements.reducers),
+                histogram_reducers=self._reducer_records(self._measurements.histograms),
+                histogram_modules=tuple(
+                    name
+                    for name, measurement in self._measurements.by_module.items()
+                    if measurement.histograms
+                ),
             ),
         )
         self._sink.initialize(run, module_records)
@@ -266,7 +269,7 @@ class Observer:
 
         self._sink.close()
 
-    def _select_modules(self) -> tuple[list[tuple[str, nn.Module]], Mapping[str, ModuleRecord]]:
+    def _select_modules(self) -> tuple[list[tuple[str, nn.Module]], dict[str, ModuleRecord]]:
         """Select unique module objects while preserving every discovered alias."""
         aliases_by_identity: dict[int, list[str]] = {}
         modules_by_identity: dict[int, nn.Module] = {}
@@ -376,7 +379,7 @@ class Observer:
         try:
             for leaf in iter_tensor_leaves(output, "output"):
                 try:
-                    record = self._tensor_record(
+                    record = self._measurements.by_module[module_name](
                         leaf.tensor,
                         sample_id=context.sample_id,
                     )
@@ -419,7 +422,7 @@ class Observer:
                         try:
                             builder.add_output_gradient(
                                 binding,
-                                self._tensor_record(
+                                self._measurements.by_module[binding.module_name](
                                     gradient,
                                     sample_id=builder.sample_id,
                                 ),
@@ -460,26 +463,6 @@ class Observer:
         handle.remove()
         with self._gradient_handles_lock:
             self._gradient_hook_handles.discard(handle)
-
-    def _tensor_record(self, tensor: torch.Tensor, *, sample_id: int) -> TensorRecord:
-        """Reduce a tensor into metadata and compact CPU-native diagnostics."""
-        reduction = reduce_tensor(tensor, self._reducers)
-        histogram_reduction = reduce_histograms(
-            tensor,
-            self._histogram_reducers,
-            sample_id=sample_id,
-        )
-        dtype = str(tensor.dtype).removeprefix("torch.")
-        return TensorRecord(
-            shape=tuple(tensor.shape),
-            dtype=dtype,
-            device=str(tensor.device),
-            numel=tensor.numel(),
-            stats=reduction.stats,
-            unavailable_stats=reduction.unavailable_stats,
-            histograms=histogram_reduction.histograms,
-            unavailable_histograms=histogram_reduction.unavailable_histograms,
-        )
 
     def _next_forward_index(self) -> int:
         """Allocate a thread-safe index for every root forward, sampled or not."""

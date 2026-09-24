@@ -1,45 +1,44 @@
 # Examples
 
-## Basic training
+## Reproduce and investigate model problems
 
-[`basic_training.py`](basic_training.py) instruments an ordinary PyTorch model, runs three
-optimizer iterations, and removes the observer. The training loop contains no telemetry calls.
+`uv run examples/find_problems.py` creates five controlled experiments automatically, with a
+progress bar. Use `--output PATH`, `--steps N` (at least eight), or `--quiet` to configure it.
+No dataset download is needed.
 
-```bash
-uv run examples/basic_training.py
-```
+Each problem has `baseline/`, `broken/`, and `fixed/` runs. Every run contains `history.parquet`,
+`result.json`, `index.md`, and `tensorboard/`. The parent directory also contains a readable
+explanation, `comparison.csv`, and a high-resolution `comparison.png`.
 
-The example samples every forward so the short run demonstrates live activation and gradient
-indicators:
+| Problem introduced at sample 4 | Query in the sampled history | What the fix changes |
+| --- | --- | --- |
+| Inactive ReLU | `activation`, output, zero_fraction reaches one | Restores the deliberately negative pre-activation bias |
+| Saturated sigmoid | `pre`, output_gradient, max collapses towards zero | Restores pre-activation scale and bias |
+| Growing gain | `gain`, output, std grows after the intervention | Holds gain at one |
+| Invalid logarithm | `probe`, output, nonfinite_fraction becomes positive | Restores log1p(abs(x)) instead of log(-abs(x)) |
+| Detached branch | `pre`, output_gradient disappears despite later forwards | Removes the bridge's detach operation |
 
-```text
-stats/basic-training-a1b2c3d4/
-    index.md
-    report.json
-```
+The gain experiment holds weights fixed to isolate gain growth from optimizer feedback.
+Baseline and fixed runs share initialization, data order, and optimizer settings. The broken
+run differs only in the explicit intervention. The examples skip optimizer updates on nonfinite
+loss to avoid making the next step's invalid parameters a second independent problem.
 
-Open `index.md` first for ranked research findings and suggested next experiments. `report.json`
-contains the same findings with exact evidence in a deterministic machine-readable schema. Its
-default size is capped at 256,000 bytes; no per-sample or exhaustive live-state files are created.
-Production training can omit `AlwaysSampler()` to restore the one-minute default interval.
+A missing gradient appears as a gap, never a measured zero. For sigmoid saturation, inspect the
+layer *before* the sigmoid: the gradient with respect to the sigmoid's output alone does not
+measure its derivative. All-zero activation across a few batches is evidence about those batches,
+not proof every channel will remain dead forever. These examples verify measurement signatures;
+they do not promise that changing one statistic improves a real task metric.
 
-## Lightning, MNIST, and TensorBoard
+## Ordinary training
 
-[`lightning_mnist.py`](lightning_mnist.py) downloads MNIST, trains a convolutional classifier, and
-shares one real Lightning `TensorBoardLogger` with `TensorBoardSink`.
+`uv run examples/basic_training.py` runs three small regression updates with every forward
+sampled. It automatically finalizes the Parquet history and per-layer JSON on observer removal.
+The output path is printed. Production callers can keep the timed sampler or select a cadence.
 
-```bash
-uv run examples/lightning_mnist.py
-```
+## Lightning and MNIST
 
-Task loss and validation accuracy appear beside live activation and gradient events in
-TensorBoard. `DirectorySink` independently maintains the bounded `report.json` and `index.md`,
-where deterministic rules rank drift, instability, tail growth, and numerical failures. The
-default run samples every 25th computational forward and collects fixed-range histograms every
-fourth telemetry sample.
-
-The observer is attached to `model.network`, the module actually invoked by `training_step()`.
-Lightning does not guarantee that the outer `LightningModule.forward()` is called.
-
-Lightning, TensorBoard, and torchvision are development/example dependencies, not core wheel
-dependencies.
+`uv run examples/lightning_mnist.py` downloads MNIST when needed and trains a compact classifier.
+Task metrics and focused histograms share Lightning's TensorBoard logger. The telemetry directory
+also owns the required history, JSON summary, guide, and TensorBoard events.
+The observer attaches to `model.network`, the computational root called by `training_step()`.
+Lightning's logger remains caller-owned and is not closed by observer removal.

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 
 from torchinstruments.records import ModuleRecord, RunRecord, SampleRecord
 from torchinstruments.sinks.base import Sink
@@ -22,7 +22,7 @@ class CompositeSink:
             raise ValueError("CompositeSink requires at least one sink")
         self._sinks = sinks
 
-    def initialize(self, run: RunRecord, modules: Mapping[str, ModuleRecord]) -> None:
+    def initialize(self, run: RunRecord, modules: dict[str, ModuleRecord]) -> None:
         """Initialize every sink or roll back those initialized before a failure."""
         initialized: list[Sink] = []
         try:

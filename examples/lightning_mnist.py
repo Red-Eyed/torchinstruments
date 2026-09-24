@@ -15,8 +15,6 @@ from torchvision import transforms
 from torchvision.datasets import MNIST
 
 from torchinstruments import (
-    CompositeSink,
-    DirectorySink,
     EveryNForwardsSampler,
     TensorBoardSink,
     histogram,
@@ -149,8 +147,8 @@ def run_training(
 ) -> Path:
     """Train with one logger shared by Lightning and TorchInstruments.
 
-    The returned path contains TensorBoard event files. Ranked evidence from the same normalized
-    measurements remains in ``index.md`` and ``report.json`` under the telemetry directory.
+    The returned path contains TensorBoard event files. The telemetry directory retains a
+    per-layer ``result.json``, ``history.parquet``, and a reading guide in ``index.md``.
     """
     L.seed_everything(7, workers=True)
     model = MnistClassifier()
@@ -159,10 +157,7 @@ def run_training(
         name="mnist-research",
         version="demo",
     )
-    sink = CompositeSink(
-        DirectorySink(config.telemetry_dir),
-        TensorBoardSink(logger),
-    )
+    sink = TensorBoardSink(logger)
 
     # Instrument the network invoked by training_step; Lightning does not guarantee that the
     # outer LightningModule.forward method is the trainer's computational root.
@@ -177,6 +172,7 @@ def run_training(
             ),
         ],
         sink=sink,
+        output_dir=config.telemetry_dir,
     )
     trainer = _build_trainer(config, logger)
     try:

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
-from typing import Protocol
+from collections.abc import Sequence
+from typing import Protocol, runtime_checkable
 
 from torchinstruments.records import (
     HistogramRecord,
@@ -14,7 +14,6 @@ from torchinstruments.records import (
     SampleState,
     TensorRecord,
 )
-from torchinstruments.sinks.logger import MetricLogger, MetricLoggerSink
 from torchinstruments.sinks.paths import path_segment, tensor_path_prefix
 
 
@@ -38,8 +37,9 @@ class HistogramWriter(Protocol):
         ...
 
 
-class TensorBoardLogger(MetricLogger, Protocol):
-    """Expose scalar logging and an externally owned TensorBoard experiment writer."""
+@runtime_checkable
+class TensorBoardLogger(Protocol):
+    """Expose an externally owned TensorBoard experiment writer."""
 
     @property
     def experiment(self) -> HistogramWriter:
@@ -48,31 +48,35 @@ class TensorBoardLogger(MetricLogger, Protocol):
 
 
 class TensorBoardSink:
-    """Project canonical scalar and histogram records through a TensorBoard logger.
+    """Project compact histogram records through a TensorBoard logger.
 
     Sample identifiers become dashboard steps because TorchInstruments cannot observe a
     universal optimizer-step counter. The supplied logger and writer remain caller-owned and are
     never flushed or finalized by this sink.
     """
 
-    def __init__(self, logger: TensorBoardLogger, *, prefix: str = "torchinstruments") -> None:
+    def __init__(
+        self, logger: TensorBoardLogger | HistogramWriter, *, prefix: str = "torchinstruments"
+    ) -> None:
         """Bind a Lightning-compatible TensorBoard logger without importing Lightning."""
-        self._logger = logger
-        self._metric_sink = MetricLoggerSink(logger, prefix=prefix)
+        match logger:
+            case TensorBoardLogger():
+                self._writer = logger.experiment
+            case _:
+                self._writer = logger
         self._prefix = prefix.strip().strip("/")
         self._initialized = False
 
-    def initialize(self, run: RunRecord, modules: Mapping[str, ModuleRecord]) -> None:
-        """Initialize the scalar projection and retain no duplicate run metadata."""
-        self._metric_sink.initialize(run, modules)
+    def initialize(self, run: RunRecord, modules: dict[str, ModuleRecord]) -> None:
+        """Initialize histogram projection without retaining duplicate metadata."""
+        del run, modules
         self._initialized = True
 
     def observe(self, sample: SampleRecord) -> None:
-        """Write scalars and only the newly observed lifecycle stage's histograms."""
+        """Write only the newly observed lifecycle stage's histograms."""
         if not self._initialized:
             raise RuntimeError("sink must be initialized before observing samples")
-        self._metric_sink.observe(sample)
-        writer = self._logger.experiment
+        writer = self._writer
         for tag, histogram in _sample_histograms(sample, prefix=self._prefix):
             limits, counts = _tensorboard_buckets(histogram)
             writer.add_histogram_raw(
@@ -89,8 +93,7 @@ class TensorBoardSink:
             )
 
     def close(self) -> None:
-        """Detach both projections without finalizing externally owned logger resources."""
-        self._metric_sink.close()
+        """Detach histogram projection without finalizing externally owned logger resources."""
         self._initialized = False
 
 
@@ -122,7 +125,7 @@ def _sample_histograms(
 def _tensor_histograms(
     module_name: str,
     call_index: int,
-    tensors: Mapping[str, TensorRecord],
+    tensors: dict[str, TensorRecord],
     *,
     prefix: str,
 ) -> list[tuple[str, HistogramRecord]]:
@@ -138,7 +141,7 @@ def _tensor_histograms(
 
 
 def _tensorboard_buckets(histogram: HistogramRecord) -> tuple[list[float], list[float]]:
-    """Derive TensorBoard bucket bounds and counts losslessly from one JSON record."""
+    """Derive TensorBoard bucket bounds and counts from one compact histogram record."""
     lower = histogram.bin_edges[0]
     upper = histogram.bin_edges[-1]
     underflow_limit = math.nextafter(lower, -math.inf)

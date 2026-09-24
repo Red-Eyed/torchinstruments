@@ -1,23 +1,10 @@
-"""Strict JSON conversion and crash-safe atomic file replacement."""
+"""Atomic text output for the run reading guide."""
 
 from __future__ import annotations
 
 import os
 import tempfile
 from pathlib import Path
-
-from torchinstruments.serialization import json_text
-
-
-def write_json_atomic(path: Path, value: object) -> None:
-    """Serialize ``value`` as strict JSON and atomically replace ``path``.
-
-    The temporary file is flushed and synchronized before replacement so readers never observe
-    a partially written live record.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json_text(value)
-    write_text_atomic(path, payload)
 
 
 def write_text_atomic(path: Path, value: str) -> None:

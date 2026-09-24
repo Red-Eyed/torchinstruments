@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from datetime import timedelta
 
 from torchinstruments.records import JsonScalar
@@ -39,6 +39,6 @@ class TimedSampler:
         """Return the stable run-metadata name for this policy."""
         return "timed"
 
-    def sampling_settings(self) -> Mapping[str, JsonScalar]:
+    def sampling_settings(self) -> dict[str, JsonScalar]:
         """Return the sampling interval in unambiguous seconds."""
         return {"interval_seconds": self._interval_seconds}

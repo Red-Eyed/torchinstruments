@@ -8,6 +8,7 @@ import torch
 from torchinstruments import combine, finite_fraction, histogram, max_abs, mean, rms, std
 from torchinstruments.reducers import (
     HistogramReductionResult,
+    ReducedScalar,
     default_reducers,
     reduce_histograms,
     reduce_tensor,
@@ -36,19 +37,25 @@ def test_float64_reductions_are_not_downcast_during_transfer() -> None:
     assert result.stats["mean"] == pytest.approx(1e40)
 
 
-def test_default_profile_distinguishes_equal_scale_but_skewed_distributions() -> None:
-    """Expose asymmetry and tails that identical mean and standard deviation hide."""
-    symmetric = reduce_tensor(torch.tensor([-1.0, -1.0, 1.0, 1.0]), default_reducers())
-    skewed = reduce_tensor(
-        torch.tensor([-0.5773503, -0.5773503, -0.5773503, 1.7320508]),
-        default_reducers(),
-    )
-
-    assert symmetric.stats["mean"] == pytest.approx(skewed.stats["mean"], abs=1e-6)
-    assert symmetric.stats["std"] == pytest.approx(skewed.stats["std"], rel=1e-5)
-    assert symmetric.stats["skewness"] == pytest.approx(0.0)
-    assert skewed.stats["skewness"] > 1.0
-    assert skewed.stats["p999_abs_to_rms"] > symmetric.stats["p999_abs_to_rms"]
+def test_default_profile_is_compact_and_descriptive() -> None:
+    """Expose only the requested statistics with no diagnostic indicators."""
+    result = reduce_tensor(torch.tensor([-1.0, 0.0, 1.0, float("nan")]), default_reducers())
+    assert set(result.stats) == {
+        "mean",
+        "std",
+        "min",
+        "max",
+        "p25",
+        "p50",
+        "p75",
+        "zero_fraction",
+        "nonfinite_fraction",
+    }
+    assert result.stats["p50"] == 0
+    assert result.stats["p25"] == -0.5
+    assert result.stats["p75"] == 0.5
+    assert result.stats["zero_fraction"] == 0.25
+    assert result.stats["nonfinite_fraction"] == 0.25
 
 
 def test_combining_duplicate_builtin_metrics_is_rejected() -> None:
@@ -60,7 +67,7 @@ def test_combining_duplicate_builtin_metrics_is_rejected() -> None:
 def test_reducer_output_must_be_scalar() -> None:
     """Reject custom reducers that return full tensors instead of compact scalars."""
 
-    def invalid_reducer(tensor: torch.Tensor) -> dict[str, torch.Tensor]:
+    def invalid_reducer(tensor: torch.Tensor) -> dict[str, ReducedScalar]:
         """Return a deliberately invalid non-scalar metric."""
         return {"invalid": tensor}
 

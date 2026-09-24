@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, TypeAlias, TypeVar
@@ -27,8 +27,8 @@ _ResultValue = TypeVar("_ResultValue")
 class HistogramReductionResult:
     """Separate available histograms from reason-carrying unavailable results."""
 
-    histograms: Mapping[str, HistogramRecord]
-    unavailable_histograms: Mapping[str, str]
+    histograms: dict[str, HistogramRecord]
+    unavailable_histograms: dict[str, str]
 
 
 class HistogramReducer(Protocol):
@@ -79,7 +79,7 @@ class _ConfiguredHistogram:
         """Identify the fixed-bin histogram reducer family."""
         return "histogram"
 
-    def reducer_settings(self) -> Mapping[str, JsonSetting]:
+    def reducer_settings(self) -> dict[str, JsonSetting]:
         """Record the exact name, binning range, and independent cadence."""
         serialized_range: str | tuple[float, float]
         if isinstance(self.value_range, HistogramRange):
@@ -112,7 +112,7 @@ def histogram(
     separately. ``HistogramRange.DYNAMIC`` covers each tensor's finite minimum and maximum.
 
     Args:
-        name: Stable record name used in JSON and dashboard paths.
+        name: Stable histogram name used in dashboard paths.
         bins: Number of regular bins, excluding underflow and overflow counts.
         value_range: Fixed finite bounds or a per-tensor dynamic range.
         every_n_samples: Independent cadence relative to sampled-forward identifiers.
@@ -185,7 +185,10 @@ def _reduce_histogram(
     minimum = finite_values.min()
     maximum = finite_values.max()
     edges = _histogram_edges(minimum, maximum, bins, value_range)
-    counts = torch.histogram(finite_values, bins=edges).hist
+    positions = torch.bucketize(finite_values.contiguous(), edges, right=True) - 1
+    inside = (finite_values >= edges[0]) & (finite_values <= edges[-1])
+    positions = positions[inside].clamp(max=bins - 1)
+    counts = torch.bincount(positions, minlength=bins)
     lower = edges[0]
     upper = edges[-1]
     underflow = (finite_values < lower).sum()
@@ -254,7 +257,7 @@ def _histogram_edges(
 
 
 def _build_record(materialized: list[float], bins: int) -> HistogramRecord:
-    """Parse one compact transfer and enforce JSON-safe histogram aggregates."""
+    """Parse one compact transfer and enforce finite histogram aggregates."""
     edge_end = bins + 1
     count_end = edge_end + bins
     edges = tuple(materialized[:edge_end])
@@ -282,7 +285,7 @@ def _build_record(materialized: list[float], bins: int) -> HistogramRecord:
 
 def _merge_unique(
     target: dict[str, _ResultValue],
-    source: Mapping[str, _ResultValue],
+    source: dict[str, _ResultValue],
     kind: str,
 ) -> None:
     """Merge dynamically named results while rejecting ambiguous duplicates."""

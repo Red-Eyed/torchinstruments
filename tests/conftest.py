@@ -25,4 +25,4 @@ def telemetry_dir(tmp_path: Path) -> Path:
 @pytest.fixture
 def detailed_sink(telemetry_dir: Path) -> DirectorySink:
     """Provide explicit exhaustive JSON only for tests that inspect every tensor path."""
-    return DirectorySink(telemetry_dir, write_full_details=True)
+    return DirectorySink(telemetry_dir)

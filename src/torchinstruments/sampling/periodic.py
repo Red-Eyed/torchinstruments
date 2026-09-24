@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-
 from torchinstruments.records import JsonScalar
 from torchinstruments.sampling.base import SamplingEvent
 
@@ -19,7 +17,7 @@ class AlwaysSampler:
         """Return the stable run-metadata name for this policy."""
         return "always"
 
-    def sampling_settings(self) -> Mapping[str, JsonScalar]:
+    def sampling_settings(self) -> dict[str, JsonScalar]:
         """Return the empty settings required by an unconditional policy."""
         return {}
 
@@ -41,6 +39,6 @@ class EveryNForwardsSampler:
         """Return the stable run-metadata name for this policy."""
         return "every_n_forwards"
 
-    def sampling_settings(self) -> Mapping[str, JsonScalar]:
+    def sampling_settings(self) -> dict[str, JsonScalar]:
         """Return the configured forward period for run metadata."""
         return {"n": self._n}

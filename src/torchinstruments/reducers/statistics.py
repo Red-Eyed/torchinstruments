@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, cast
 
@@ -18,70 +18,13 @@ _MetricName = Literal[
     "rms",
     "minimum",
     "maximum",
-    "mean_abs",
-    "l1_norm",
-    "l2_norm",
     "max_abs",
     "finite_fraction",
     "zero_fraction",
-    "negative_fraction",
-    "positive_fraction",
-    "skewness",
-    "excess_kurtosis",
-    "p01",
-    "p05",
     "p25",
     "median",
     "p75",
-    "p95",
-    "p99",
-    "p999",
-    "p99_abs",
-    "p999_abs",
-    "interquartile_range",
-    "central_98_range",
-    "max_to_rms",
-    "p99_abs_to_rms",
-    "p999_abs_to_rms",
-    "tail_fraction_beyond_3_std",
-    "normalized_magnitude_entropy",
-    "effective_magnitude_support_fraction",
 ]
-_ALL_METRICS: tuple[_MetricName, ...] = (
-    "mean",
-    "std",
-    "rms",
-    "minimum",
-    "maximum",
-    "mean_abs",
-    "l1_norm",
-    "l2_norm",
-    "max_abs",
-    "finite_fraction",
-    "zero_fraction",
-    "negative_fraction",
-    "positive_fraction",
-    "skewness",
-    "excess_kurtosis",
-    "p01",
-    "p05",
-    "p25",
-    "median",
-    "p75",
-    "p95",
-    "p99",
-    "p999",
-    "p99_abs",
-    "p999_abs",
-    "interquartile_range",
-    "central_98_range",
-    "max_to_rms",
-    "p99_abs_to_rms",
-    "p999_abs_to_rms",
-    "tail_fraction_beyond_3_std",
-    "normalized_magnitude_entropy",
-    "effective_magnitude_support_fraction",
-)
 
 
 @dataclass(frozen=True)
@@ -90,7 +33,7 @@ class _StatisticReducer:
 
     metrics: tuple[_MetricName, ...]
 
-    def __call__(self, tensor: torch.Tensor) -> Mapping[str, ReducedScalar]:
+    def __call__(self, tensor: torch.Tensor) -> dict[str, ReducedScalar]:
         """Return only the configured built-in statistics for ``tensor``."""
         statistics = _statistics(tensor, self.metrics)
         return {name: statistics[name] for name in self.metrics}
@@ -99,14 +42,64 @@ class _StatisticReducer:
         """Identify the fused built-in scalar-statistics reducer."""
         return "statistics"
 
-    def reducer_settings(self) -> Mapping[str, JsonSetting]:
+    def reducer_settings(self) -> dict[str, JsonSetting]:
         """Record the exact scalar metric names produced by this reducer."""
         return {"metrics": self.metrics}
 
 
+@dataclass(frozen=True)
+class _CompactStatistics:
+    """Expose a small descriptive profile with consistent percentile names."""
+
+    def __call__(self, tensor: torch.Tensor) -> dict[str, ReducedScalar]:
+        """Preserve invalid-value prevalence while reducing finite tensor entries."""
+        source = _statistics(
+            tensor,
+            (
+                "mean",
+                "std",
+                "minimum",
+                "maximum",
+                "p25",
+                "median",
+                "p75",
+                "zero_fraction",
+                "finite_fraction",
+            ),
+        )
+        names = {"minimum": "min", "maximum": "max", "median": "p50"}
+        result: dict[str, ReducedScalar] = {
+            names.get(name, name): value
+            for name, value in source.items()
+            if name != "finite_fraction"
+        }
+        result["nonfinite_fraction"] = 1 - source["finite_fraction"]
+        return result
+
+    def reducer_type(self) -> str:
+        """Identify the default finite-value profile."""
+        return "statistics"
+
+    def reducer_settings(self) -> dict[str, JsonSetting]:
+        """Describe the public metric names in this profile."""
+        return {
+            "metrics": (
+                "mean",
+                "std",
+                "min",
+                "max",
+                "p25",
+                "p50",
+                "p75",
+                "zero_fraction",
+                "nonfinite_fraction",
+            )
+        }
+
+
 def default_reducers() -> tuple[Reducer, ...]:
-    """Return the rich point-in-time distribution profile enabled for every sample."""
-    return (_StatisticReducer(_ALL_METRICS),)
+    """Return a compact distribution profile for every sampled tensor."""
+    return (_CompactStatistics(),)
 
 
 def mean() -> Reducer:
@@ -146,7 +139,7 @@ def combine(*reducers: Reducer) -> Reducer:
             raise ValueError("combined reducers contain duplicate metrics")
         return _StatisticReducer(metrics)
 
-    def combined(tensor: torch.Tensor) -> Mapping[str, ReducedScalar]:
+    def combined(tensor: torch.Tensor) -> dict[str, ReducedScalar]:
         """Evaluate arbitrary child reducers and merge their scalar mappings."""
         combined_values: dict[str, ReducedScalar] = {}
         for reducer in reducers:
@@ -174,167 +167,70 @@ def reduce_tensor(tensor: torch.Tensor, reducers: Sequence[Reducer]) -> Reductio
 
 
 def _statistics(
-    tensor: torch.Tensor,
-    requested: tuple[_MetricName, ...],
-) -> Mapping[str, ReducedScalar]:
-    """Compute requested statistics on finite values in a numerically safe dtype."""
+    tensor: torch.Tensor, requested: tuple[_MetricName, ...]
+) -> dict[str, torch.Tensor]:
+    """Measure finite entries while retaining invalid and zero prevalence over the full tensor."""
     values = _working_values(tensor)
+    unavailable = torch.full((), float("nan"), device=values.device, dtype=values.dtype)
     if values.numel() == 0:
-        unavailable = torch.full((), float("nan"), device=values.device, dtype=values.dtype)
         return {name: unavailable for name in requested}
-
     finite_mask = torch.isfinite(values)
     statistics: dict[str, torch.Tensor] = {}
     if "finite_fraction" in requested:
-        statistics["finite_fraction"] = finite_mask.to(dtype=values.dtype).mean()
+        statistics["finite_fraction"] = finite_mask.to(values.dtype).mean()
     if "zero_fraction" in requested:
         statistics["zero_fraction"] = (finite_mask & (values == 0)).to(values.dtype).mean()
-    if "negative_fraction" in requested:
-        statistics["negative_fraction"] = (finite_mask & (values < 0)).to(values.dtype).mean()
-    if "positive_fraction" in requested:
-        statistics["positive_fraction"] = (finite_mask & (values > 0)).to(values.dtype).mean()
-
-    fraction_metrics = {
-        "finite_fraction",
-        "zero_fraction",
-        "negative_fraction",
-        "positive_fraction",
-    }
-    numerical_metrics = tuple(name for name in requested if name not in fraction_metrics)
-    if not numerical_metrics:
-        return statistics
-
-    finite_count = finite_mask.sum()
-    denominator = finite_count.clamp_min(1)
-    zeros = torch.zeros((), device=values.device, dtype=values.dtype)
-    masked_values = torch.where(finite_mask, values, zeros)
-    finite_values = values[finite_mask]
-    unavailable = torch.full((), float("nan"), device=values.device, dtype=values.dtype)
-    if finite_values.numel() == 0:
-        for name in numerical_metrics:
-            statistics[name] = unavailable
-        return statistics
-    has_finite_value = finite_count > 0
-
-    sum_value = masked_values.sum()
-    sum_abs = masked_values.abs().sum()
-    sum_squares = masked_values.square().sum()
-    mean_value = sum_value / denominator
-    mean_abs_value = sum_abs / denominator
-    rms_value = torch.sqrt(sum_squares / denominator)
-    negative_infinity = torch.full((), float("-inf"), device=values.device, dtype=values.dtype)
-    positive_infinity = torch.full((), float("inf"), device=values.device, dtype=values.dtype)
-    minimum = torch.where(finite_mask, values, positive_infinity).min()
-    maximum = torch.where(finite_mask, values, negative_infinity).max()
-    maximum_absolute = torch.where(finite_mask, values.abs(), negative_infinity).max()
-
-    if "mean" in numerical_metrics:
-        statistics["mean"] = torch.where(has_finite_value, mean_value, unavailable)
-    if "minimum" in numerical_metrics:
-        statistics["minimum"] = torch.where(has_finite_value, minimum, unavailable)
-    if "maximum" in numerical_metrics:
-        statistics["maximum"] = torch.where(has_finite_value, maximum, unavailable)
-    if "mean_abs" in numerical_metrics:
-        statistics["mean_abs"] = torch.where(has_finite_value, mean_abs_value, unavailable)
-    if "l1_norm" in numerical_metrics:
-        statistics["l1_norm"] = torch.where(has_finite_value, sum_abs, unavailable)
-    if "l2_norm" in numerical_metrics:
-        statistics["l2_norm"] = torch.where(has_finite_value, torch.sqrt(sum_squares), unavailable)
-    if "rms" in numerical_metrics:
-        statistics["rms"] = torch.where(has_finite_value, rms_value, unavailable)
-    if "max_abs" in numerical_metrics:
-        statistics["max_abs"] = torch.where(has_finite_value, maximum_absolute, unavailable)
-
-    centered = torch.where(finite_mask, values - mean_value, zeros)
-    variance = centered.square().sum() / denominator
-    standard_deviation = torch.sqrt(variance)
-    if "std" in numerical_metrics:
-        statistics["std"] = torch.where(has_finite_value, torch.sqrt(variance), unavailable)
-
-    has_scale = variance > 0
-    if "skewness" in numerical_metrics:
-        third_moment = centered.pow(3).sum() / denominator
-        skewness = third_moment / standard_deviation.pow(3)
-        statistics["skewness"] = torch.where(has_scale, skewness, unavailable)
-    if "excess_kurtosis" in numerical_metrics:
-        fourth_moment = centered.pow(4).sum() / denominator
-        excess_kurtosis = fourth_moment / variance.square() - 3
-        statistics["excess_kurtosis"] = torch.where(has_scale, excess_kurtosis, unavailable)
-    if "tail_fraction_beyond_3_std" in numerical_metrics:
-        tail_fraction = (centered.abs() > 3 * standard_deviation).to(values.dtype).sum()
-        tail_fraction = tail_fraction / denominator
-        statistics["tail_fraction_beyond_3_std"] = torch.where(
-            has_scale, tail_fraction, unavailable
-        )
-
-    quantile_names = ("p01", "p05", "p25", "median", "p75", "p95", "p99", "p999")
-    needs_quantiles = any(name in numerical_metrics for name in quantile_names) or any(
-        name in numerical_metrics for name in ("interquartile_range", "central_98_range")
+    numerical = tuple(
+        name for name in requested if name not in {"finite_fraction", "zero_fraction"}
     )
-    if needs_quantiles:
-        probabilities = torch.tensor(
-            [0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99, 0.999],
-            device=values.device,
-            dtype=values.dtype,
-        )
-        quantiles = torch.quantile(finite_values, probabilities)
-        quantile_values = dict(zip(quantile_names, quantiles, strict=True))
-        for name in quantile_names:
-            if name in numerical_metrics:
-                statistics[name] = quantile_values[name]
-        if "interquartile_range" in numerical_metrics:
-            statistics["interquartile_range"] = quantile_values["p75"] - quantile_values["p25"]
-        if "central_98_range" in numerical_metrics:
-            statistics["central_98_range"] = quantile_values["p99"] - quantile_values["p01"]
-
-    absolute_quantile_names = ("p99_abs", "p999_abs")
-    needs_absolute_quantiles = any(
-        name in numerical_metrics
-        for name in (*absolute_quantile_names, "p99_abs_to_rms", "p999_abs_to_rms")
-    )
-    absolute_quantiles: dict[str, torch.Tensor] = {}
-    if needs_absolute_quantiles:
-        probabilities = torch.tensor([0.99, 0.999], device=values.device, dtype=values.dtype)
-        values_at_quantiles = torch.quantile(finite_values.abs(), probabilities)
-        absolute_quantiles = dict(zip(absolute_quantile_names, values_at_quantiles, strict=True))
-        for name in absolute_quantile_names:
-            if name in numerical_metrics:
-                statistics[name] = absolute_quantiles[name]
-
-    if "max_to_rms" in numerical_metrics:
-        statistics["max_to_rms"] = torch.where(
-            rms_value > 0, maximum_absolute / rms_value, unavailable
-        )
-    if "p99_abs_to_rms" in numerical_metrics:
-        statistics["p99_abs_to_rms"] = torch.where(
-            rms_value > 0, absolute_quantiles["p99_abs"] / rms_value, unavailable
-        )
-    if "p999_abs_to_rms" in numerical_metrics:
-        statistics["p999_abs_to_rms"] = torch.where(
-            rms_value > 0, absolute_quantiles["p999_abs"] / rms_value, unavailable
-        )
-
-    entropy_metrics = {
-        "normalized_magnitude_entropy",
-        "effective_magnitude_support_fraction",
-    }
-    if entropy_metrics & set(numerical_metrics):
-        probabilities = finite_values.abs() / sum_abs
-        log_probabilities = probabilities.clamp_min(torch.finfo(values.dtype).tiny).log()
-        entropy = -(probabilities * log_probabilities).sum()
-        normalized_entropy = entropy / math.log(max(finite_values.numel(), 2))
-        has_magnitude = sum_abs > 0
-        if "normalized_magnitude_entropy" in numerical_metrics:
-            statistics["normalized_magnitude_entropy"] = torch.where(
-                has_magnitude, normalized_entropy, unavailable
-            )
-        if "effective_magnitude_support_fraction" in numerical_metrics:
-            effective_support = entropy.exp() / denominator
-            statistics["effective_magnitude_support_fraction"] = torch.where(
-                has_magnitude, effective_support, unavailable
-            )
-
+    if not numerical:
+        return statistics
+    finite = values[finite_mask]
+    if finite.numel() == 0:
+        statistics.update((name, unavailable) for name in numerical)
+        return statistics
+    statistics.update(_finite_statistics(finite, numerical))
     return statistics
+
+
+def _finite_statistics(
+    values: torch.Tensor, requested: tuple[_MetricName, ...]
+) -> dict[str, torch.Tensor]:
+    """Compute only requested distribution measurements on a nonempty finite tensor."""
+    result: dict[str, torch.Tensor] = {}
+    for name in requested:
+        match name:
+            case "mean":
+                result[name] = values.mean()
+            case "std":
+                result[name] = values.std(correction=0)
+            case "rms":
+                result[name] = values.square().mean().sqrt()
+            case "minimum":
+                result[name] = values.min()
+            case "maximum":
+                result[name] = values.max()
+            case "max_abs":
+                result[name] = values.abs().max()
+            case "p25" | "median" | "p75":
+                continue
+            case _:
+                raise ValueError(f"unsupported finite statistic: {name}")
+    result.update(_quantiles(values, requested))
+    return result
+
+
+def _quantiles(values: torch.Tensor, requested: tuple[_MetricName, ...]) -> dict[str, torch.Tensor]:
+    """Fuse the requested quartiles into one device-local operation."""
+    probabilities = {"p25": 0.25, "median": 0.5, "p75": 0.75}
+    names = [name for name in probabilities if name in requested]
+    if not names:
+        return {}
+    levels = torch.tensor(
+        [probabilities[name] for name in names], device=values.device, dtype=values.dtype
+    )
+    quantiles = torch.quantile(values, levels)
+    return dict(zip(names, quantiles, strict=True))
 
 
 def _working_values(tensor: torch.Tensor) -> torch.Tensor:
@@ -348,7 +244,7 @@ def _working_values(tensor: torch.Tensor) -> torch.Tensor:
     return tensor.to(dtype=torch.float32)
 
 
-def _materialize_scalars(values: Mapping[str, ReducedScalar]) -> ReductionResult:
+def _materialize_scalars(values: dict[str, ReducedScalar]) -> ReductionResult:
     """Convert compact scalar tensors to Python floats with one transfer per device."""
     stats: dict[str, float] = {}
     unavailable_stats: dict[str, str] = {}

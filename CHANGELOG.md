@@ -2,6 +2,71 @@
 
 All notable changes to TorchInstruments are documented here.
 
+## [0.7.0] - 2026-09-24
+
+### Highlights
+
+- Keep sampled per-layer measurement history in Parquet, aggregate it with Polars, and write
+  descriptive per-layer JSON without scores, rankings, or problem categories.
+- Produce all four run artifacts: `history.parquet`, `result.json`, an LLM reading guide in
+  `index.md`, and focused TensorBoard histograms.
+
+### Backwards Incompatible Changes
+
+#### Artifacts and finalization
+
+Replace ranked `report.json` and optional `details.json` with `result.json` and Parquet history.
+The JSON is an array of layer records, including selected layers with no observations. Each
+observed tensor contains metric counts, endpoints, extrema, and adjacent-window averages.
+There is no report byte budget or layer ranking.
+
+During training, query completed `history.parts/*.parquet` chunks and TensorBoard events.
+`result.json` initially contains the layer catalog. Call `remove_observer(model)` in a `finally`
+block to finalize `history.parquet` and its JSON aggregation. Completed chunks remain readable
+after interrupted execution. Window averages describe sample statistics, not pooled tensors.
+
+#### Configuration and extension points
+
+Remove `ReportConfig`, `IndicatorConfig`, `Aggregator`, `LiveAggregator`, `MetricLogger`,
+`MetricLoggerSink`, and `merge_rank_reports()`. Remove `DirectorySink` finding-rule,
+aggregator-factory, report-config, and `write_full_details` arguments. Replace report configuration
+with `HistoryConfig(buffer_rows=..., window=...)` through `history_config`.
+
+Custom sinks supplied to `inject_observer()` now receive events alongside required directory
+outputs; a supplied `DirectorySink` owns the destination itself. `TensorBoardSink` writes
+histograms only and accepts a writer directly or a logger exposing `.experiment`. External
+writers remain caller-owned. Rank-private directories remain supported; compare their data
+explicitly instead of calling the removed ranking merger.
+
+#### Default measurements and dependencies
+
+Reduce the default profile to mean, population standard deviation, min, max, p25, p50, p75,
+zero fraction, and nonfinite fraction. Default metric names use `min`, `max`, `p50`, and
+`nonfinite_fraction`; update consumers of the previous names and richer default profile.
+Custom scalar reducers remain supported.
+
+Make Polars and TensorBoard runtime dependencies. Histograms run on every sampled forward and
+observed backward for the first eight selected modules by default. Configure
+`histogram_selector` and `max_histogram_modules` to choose the focus before reduction.
+At least one scalar reducer and one histogram reducer are required. Transient telemetry schema
+advances to version 6 and records the histogram module selection.
+
+### Documentation
+
+- Add `examples/find_problems.py` with controlled inactive-ReLU, sigmoid-saturation, growing-gain,
+  nonfinite-value, and detached-branch experiments. Each generates baseline/broken/fixed artifacts,
+  Polars evidence tables, comparison plots, and an explanation of the intervention.
+- Rewrite the LLM guide and research workflows around querying measurements, distinguishing
+  missing evidence, and testing a proposed cause through a controlled comparison.
+
+### Developers
+
+- Validate all-layer coverage with 1,000 modules while restricting actual histogram collection
+  to the configured focus. Cover buffer bounds, delayed backwards, shared calls, invalid values,
+  writer ownership, and unchanged model outputs and gradients.
+- Use explicit record types and exhaustive pattern-match fallbacks. Package the release as a
+  portable pure-Python wheel; CUDA performance and `torch.compile` compatibility remain unclaimed.
+
 ## [0.6.0] - 2026-08-14
 
 ### Highlights

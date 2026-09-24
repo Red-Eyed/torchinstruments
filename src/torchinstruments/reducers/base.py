@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol, TypeAlias, runtime_checkable
 
@@ -16,7 +15,7 @@ ReducedScalar: TypeAlias = bool | float | int | torch.Tensor
 class Reducer(Protocol):
     """Convert one detached tensor into named compact scalar values."""
 
-    def __call__(self, tensor: torch.Tensor) -> Mapping[str, ReducedScalar]:
+    def __call__(self, tensor: torch.Tensor) -> dict[str, ReducedScalar]:
         """Return named scalar diagnostics without retaining the autograd graph."""
         ...
 
@@ -29,7 +28,7 @@ class DescribedReducer(Protocol):
         """Return the stable reducer family name written to run metadata."""
         ...
 
-    def reducer_settings(self) -> Mapping[str, JsonSetting]:
+    def reducer_settings(self) -> dict[str, JsonSetting]:
         """Return JSON-compatible settings that determine reducer behavior."""
         ...
 
@@ -38,5 +37,5 @@ class DescribedReducer(Protocol):
 class ReductionResult:
     """Separate usable scalar statistics from reason-carrying unavailable metrics."""
 
-    stats: Mapping[str, float]
-    unavailable_stats: Mapping[str, str]
+    stats: dict[str, float]
+    unavailable_stats: dict[str, str]

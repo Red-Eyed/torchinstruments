@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import polars as pl
 import torch
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 from torch.utils.data import DataLoader, TensorDataset
 
 from examples.lightning_mnist import MnistRunConfig, run_training
-from tests.json_records import read_report
 
 
 def test_lightning_example_writes_json_and_tensorboard(tmp_path: Path) -> None:
@@ -30,23 +30,18 @@ def test_lightning_example_writes_json_and_tensorboard(tmp_path: Path) -> None:
 
     tensorboard_dir = run_training(config, train_loader, validation_loader)
 
-    report = read_report(telemetry_dir / "report.json")
-    assert report["coverage"]["samples_observed"] == 4
-    assert report["coverage"]["backward_samples_observed"] == 3
-    assert report["coverage"]["histograms"] > 0
+    history = pl.read_parquet(telemetry_dir / "history.parquet")
+    assert history.filter(pl.col("signal") == "output")["sample_id"].n_unique() == 4
+    assert history.filter(pl.col("signal") == "output_gradient")["sample_id"].n_unique() == 3
+    assert (telemetry_dir / "result.json").exists()
 
     events = EventAccumulator(
         str(tensorboard_dir),
         size_guidance={"histograms": 0},
     ).Reload()
     scalar_tags = _read_scalar_tags(events)
-    output_rms = "torchinstruments/modules/0/call_0/output/rms"
-    gradient_rms = "torchinstruments/modules/7/call_0/grad_output/rms"
-    assert output_rms in scalar_tags
-    assert gradient_rms in scalar_tags
     assert "task/validation_accuracy" in scalar_tags
-    assert [event.step for event in events.Scalars(output_rms)] == [0, 1, 2, 3]
-    assert [event.step for event in events.Scalars(gradient_rms)] == [0, 1, 2]
+    assert not any(tag.startswith("torchinstruments/") for tag in scalar_tags)
     histogram_tags = _read_histogram_tags(events)
     output_distribution = "torchinstruments/modules/0/call_0/output/histograms/distribution"
     gradient_distribution = "torchinstruments/modules/7/call_0/grad_output/histograms/distribution"

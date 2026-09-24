@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "torchinstruments"
-version = "0.6.0"
+version = "0.7.0"
 description = "Passive, trainer-agnostic telemetry for PyTorch models"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,6 +14,8 @@ authors = [
     { name = "Vadym Stupakov", email = "vadim.stupakov@gmail.com" },
 ]
 dependencies = [
+    "polars>=1.32,<2",
+    "tensorboard>=2.21",
     "torch>=2.0",
 ]
 keywords = ["pytorch", "observability", "telemetry", "training", "diagnostics"]
@@ -38,11 +40,14 @@ Repository = "https://github.com/Red-Eyed/torchinstruments"
 dev = [
     "dirty-equals>=0.11.0",
     "lightning>=2.6.5",
+    "matplotlib>=3.9",
+    "pydantic-settings>=2.10",
     "pyrefly>=0.34.0",
     "pytest>=8.3.0",
     "ruff>=0.12.0",
     "tensorboard>=2.21.0",
     "torchvision>=0.28.0",
+    "tqdm>=4.67",
 ]
 
 [tool.pytest.ini_options]
