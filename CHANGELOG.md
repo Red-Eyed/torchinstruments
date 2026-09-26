@@ -4,6 +4,14 @@ All notable changes to TorchInstruments are documented here.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-09-26
+
+### Improvements
+
+- Capture histograms for every selected module by default instead of limiting coverage to
+  the first eight modules. Set `max_histogram_modules=8` to retain the previous limit, or
+  use `histogram_selector` to focus collection.
+
 ### Bug Fixes
 
 - Keep successful scalar and histogram measurements when custom scalar reducers return
@@ -21,7 +29,7 @@ All notable changes to TorchInstruments are documented here.
 - Validate untyped model outputs and Lightning batches at their boundaries using `match`.
 - Add regression coverage for invalid custom scalars, artifact delivery failures, partial
   initialization, integer observations, and runtime annotation resolution.
-- Advance the package version to `0.10.2`.
+- Add pinned BERT and GPT-2 integration coverage, with checkpoint downloads enabled explicitly.
 
 ## [0.10.0] - 2026-09-24
 
