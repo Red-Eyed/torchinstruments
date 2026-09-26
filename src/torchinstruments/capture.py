@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import functools
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 from types import MethodType
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import torch
 from torch import nn
 
 from torchinstruments.records import ExecutionContext, ModuleMode
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 _MISSING = object()
 

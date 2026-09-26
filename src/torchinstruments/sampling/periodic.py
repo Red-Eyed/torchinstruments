@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from torchinstruments.records import JsonScalar
-from torchinstruments.sampling.base import SamplingEvent
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from torchinstruments.records import JsonScalar
+    from torchinstruments.sampling.base import SamplingEvent
 
 
 class AlwaysSampler:

@@ -14,6 +14,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision.datasets import MNIST
+from typing_extensions import override
 
 from torchinstruments import (
     TensorBoardSink,
@@ -69,6 +70,7 @@ class MnistClassifier(L.LightningModule):
             nn.Linear(32 * 4 * 4, 10),
         )
 
+    @override
     def on_fit_start(self) -> None:
         """Attach telemetry once Lightning has assigned the trainer and its logger."""
         logger = self.trainer.logger
@@ -81,21 +83,32 @@ class MnistClassifier(L.LightningModule):
             sink=TensorBoardSink(logger),
         )
 
+    @override
     def on_fit_end(self) -> None:
         """Finalize telemetry while leaving Lightning's logger under trainer ownership."""
         remove_observer(self.network)
 
-    def forward(self, images: torch.Tensor) -> torch.Tensor:
+    @override
+    # Lightning types forward as Any varargs; remove when it supports typed model inputs.
+    def forward(self, images: torch.Tensor) -> torch.Tensor:  # pyrefly: ignore[bad-override]
         """Return class logits for one image batch."""
-        return self.network(images)
+        output: object = self.network(images)
+        match output:
+            case torch.Tensor():
+                return output
+            case _:
+                raise TypeError("classifier network must return a tensor")
 
-    def training_step(
+    @override
+    # Lightning dispatches a batch and index; remove when its hook signature expresses them.
+    def training_step(  # pyrefly: ignore[bad-override]
         self,
-        batch: tuple[torch.Tensor, torch.Tensor],
+        batch: object,
         batch_index: int,
     ) -> torch.Tensor:
         """Optimize cross-entropy while logging the task-level training signals."""
         del batch_index
+        batch = _tensor_pair(batch)
         loss, accuracy = self._loss_and_accuracy(batch)
         self.log("task/train_loss", loss, on_step=True, on_epoch=True, batch_size=batch[0].shape[0])
         self.log(
@@ -107,13 +120,16 @@ class MnistClassifier(L.LightningModule):
         )
         return loss
 
-    def validation_step(
+    @override
+    # Lightning dispatches a batch and index; remove when its hook signature expresses them.
+    def validation_step(  # pyrefly: ignore[bad-override]
         self,
-        batch: tuple[torch.Tensor, torch.Tensor],
+        batch: object,
         batch_index: int,
     ) -> None:
         """Log validation loss and accuracy beside internal telemetry trends."""
         del batch_index
+        batch = _tensor_pair(batch)
         loss, accuracy = self._loss_and_accuracy(batch)
         self.log(
             "task/validation_loss",
@@ -130,6 +146,7 @@ class MnistClassifier(L.LightningModule):
             batch_size=batch[0].shape[0],
         )
 
+    @override
     def configure_optimizers(self) -> torch.optim.Optimizer:
         """Configure the optimizer owned by Lightning's training loop."""
         return torch.optim.Adam(self.parameters(), lr=1e-3)
@@ -140,13 +157,27 @@ class MnistClassifier(L.LightningModule):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute differentiable loss and batch accuracy from one labeled batch."""
         images, targets = batch
-        logits = self(images)
+        logits: object = self(images)
+        match logits:
+            case torch.Tensor():
+                pass
+            case _:
+                raise TypeError("classifier must return tensor logits")
         loss = nn.functional.cross_entropy(logits, targets)
         accuracy = (logits.argmax(dim=1) == targets).to(dtype=torch.float32).mean()
         return loss, accuracy
 
 
-def build_mnist_loaders(config: MnistRunConfig) -> tuple[DataLoader, DataLoader]:
+def _tensor_pair(batch: object) -> tuple[torch.Tensor, torch.Tensor]:
+    """Validate collated images and labels once at the Lightning batch boundary."""
+    match batch:
+        case [torch.Tensor() as images, torch.Tensor() as targets]:
+            return images, targets
+        case _:
+            raise TypeError("MNIST batch must contain image and label tensors")
+
+
+def build_mnist_loaders(config: MnistRunConfig) -> tuple[DataLoader[object], DataLoader[object]]:
     """Download MNIST when needed and return shuffled train and stable validation loaders."""
     transform = transforms.ToTensor()
     train_dataset = MNIST(config.data_dir, train=True, download=True, transform=transform)
@@ -158,8 +189,8 @@ def build_mnist_loaders(config: MnistRunConfig) -> tuple[DataLoader, DataLoader]
 
 def run_training(
     config: MnistRunConfig,
-    train_loader: DataLoader,
-    validation_loader: DataLoader,
+    train_loader: DataLoader[object],
+    validation_loader: DataLoader[object],
 ) -> Path:
     """Train with one logger shared by Lightning and TorchInstruments.
 

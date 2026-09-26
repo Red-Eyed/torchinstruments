@@ -7,11 +7,11 @@ import threading
 import time
 import warnings
 import weakref
-from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
 from importlib.metadata import version as package_version
+from typing import TYPE_CHECKING
 
 import torch
 from torch import nn
@@ -20,7 +20,6 @@ from torchinstruments.capture import CallCapture, CaptureCallbacks
 from torchinstruments.errors import ErrorPolicy
 from torchinstruments.gradient_capture import FirstBackward, backward_is_running
 from torchinstruments.isolated_measurement import IsolatedMeasurement
-from torchinstruments.measurement import Measurements
 from torchinstruments.pytree import iter_tensor_leaves
 from torchinstruments.records import (
     SCHEMA_VERSION,
@@ -40,8 +39,13 @@ from torchinstruments.records import (
 from torchinstruments.reducers.base import DescribedReducer
 from torchinstruments.sampling import SamplingEvent, SamplingPolicy
 from torchinstruments.sampling.base import DescribedSamplingPolicy
-from torchinstruments.selectors import ModuleSelector
-from torchinstruments.sinks import Sink
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from torchinstruments.measurement import Measurements
+    from torchinstruments.selectors import ModuleSelector
+    from torchinstruments.sinks import Sink
 
 _NOT_COLLECTING = object()
 

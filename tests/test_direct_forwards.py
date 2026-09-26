@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import copy
 from enum import StrEnum
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
 import torch
 from torch import nn
+from typing_extensions import override
 
 from torchinstruments import (
     AlwaysSampler,
@@ -18,6 +19,9 @@ from torchinstruments import (
     leaf_modules,
     remove_observer,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class _InvocationStyle(StrEnum):
@@ -36,11 +40,17 @@ class _MixedInvocationModel(nn.Module):
         self.linear = nn.Linear(4, 3, bias=False)
         self._leaf_style = leaf_style
 
+    @override
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """Return the linear projection through normal or direct dispatch."""
         if self._leaf_style is _InvocationStyle.FORWARD:
             return self.linear.forward(inputs)
-        return self.linear(inputs)
+        output: object = self.linear(inputs)
+        match output:
+            case torch.Tensor():
+                return output
+            case _:
+                pytest.fail("linear module must return a tensor")
 
 
 @pytest.mark.parametrize("root_style", list(_InvocationStyle))
@@ -117,8 +127,14 @@ def _invoke(
 ) -> torch.Tensor:
     """Invoke a root module through the selected public or direct boundary."""
     if style is _InvocationStyle.FORWARD:
-        return model.forward(inputs)
-    return model(inputs)
+        output: object = model.forward(inputs)
+    else:
+        output = model(inputs)
+    match output:
+        case torch.Tensor():
+            return output
+        case _:
+            pytest.fail("invoked model must return a tensor")
 
 
 def test_nested_shared_modules_are_intercepted_once(telemetry_dir: Path) -> None:

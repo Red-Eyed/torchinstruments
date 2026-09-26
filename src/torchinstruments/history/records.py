@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from torchinstruments.records import Absent, ExecutionContext, SampleRecord, SampleState
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 class Signal(StrEnum):

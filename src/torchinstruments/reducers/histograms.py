@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Protocol, TypeAlias, TypeVar
 
 import torch
 
 from torchinstruments.records import HistogramRecord, JsonSetting
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 class HistogramRange(StrEnum):

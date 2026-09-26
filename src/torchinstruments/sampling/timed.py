@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
 from datetime import timedelta
 from threading import Lock
+from typing import TYPE_CHECKING
 
-from torchinstruments.records import JsonScalar
-from torchinstruments.sampling.base import SamplingEvent
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from torchinstruments.records import JsonScalar
+    from torchinstruments.sampling.base import SamplingEvent
 
 
 class TimedSampler:

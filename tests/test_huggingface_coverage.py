@@ -32,7 +32,12 @@ class ExpectedTensor:
 @pytest.fixture(params=["bert", "gpt2"])
 def architecture(request: pytest.FixtureRequest) -> str:
     """Exercise both bidirectional and causal Transformer implementations."""
-    return request.param
+    value: object = request.param
+    match value:
+        case str():
+            return value
+        case _:
+            pytest.fail("architecture must be a string")
 
 
 @pytest.fixture(params=["config", "hub"])
@@ -45,12 +50,17 @@ def transformer(request: pytest.FixtureRequest, architecture: str) -> nn.Module:
             "bert": "f171d7baecaf37b5da5a3616d8833b9969753535",
             "gpt2": "71034c5d8bde858ff824298bdedc65515b97d2b9",
         }
-        return AutoModel.from_pretrained(
+        model: object = AutoModel.from_pretrained(
             f"hf-internal-testing/tiny-random-{architecture}",
             revision=revisions[architecture],
             use_safetensors=True,
             attn_implementation="eager",
         )
+        match model:
+            case nn.Module():
+                return model
+            case _:
+                pytest.fail("checkpoint loader must return a module")
     if architecture == "bert":
         return BertModel(
             BertConfig(

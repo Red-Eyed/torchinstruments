@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
-from torch import nn
+if TYPE_CHECKING:
+    from torch import nn
 
 
 class ModuleSelector(Protocol):

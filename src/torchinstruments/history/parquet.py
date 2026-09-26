@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from pathlib import Path
-from typing import TypedDict, assert_never
+from typing import TYPE_CHECKING, TypedDict, assert_never
 
 import polars as pl
 
-from torchinstruments.history.records import Observation
 from torchinstruments.records import Absent
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from torchinstruments.history.records import Observation
 
 
 class _Row(TypedDict):
@@ -76,8 +79,8 @@ class ParquetHistory:
         match observation.value:
             case Absent(reason=missing):
                 value, reason = None, missing
-            case float() as measured:
-                value = measured
+            case int() | float() as measured:
+                value = float(measured)
             case _:
                 assert_never(observation.value)
         self._buffer.append(

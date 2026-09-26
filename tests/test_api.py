@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 import torch
@@ -14,6 +14,9 @@ from torchinstruments import (
     inject_observer,
     remove_observer,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_injection_does_not_change_state_dict(

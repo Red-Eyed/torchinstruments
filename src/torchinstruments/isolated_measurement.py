@@ -1,6 +1,6 @@
 """Isolate reducer failures while retaining the observer's error policy."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import torch
@@ -25,14 +25,20 @@ class _GuardedScalar:
 
     def __call__(self, tensor: torch.Tensor) -> dict[str, ReducedScalar]:
         """Preserve known metric names as explicit absence after a reducer failure."""
+        values: dict[str, ReducedScalar] = {}
         try:
             values = self.reducer(tensor)
-            _validate_scalars(values)
-            return values
+            return _validate_scalars(values)
         except Exception as error:
             self.report(error)
             reason = f"{type(error).__name__}: {error}"
-            return {name: Absent(reason) for name in _metric_names(self.reducer)}
+            match values:
+                case dict():
+                    names = _string_names(values)
+                case _:
+                    names = ()
+            names = names or _metric_names(self.reducer)
+            return {name: Absent(reason) for name in names}
 
 
 def _metric_names(reducer: Reducer) -> tuple[str, ...]:
@@ -44,22 +50,53 @@ def _metric_names(reducer: Reducer) -> tuple[str, ...]:
             return ()
     match names:
         case tuple():
-            return tuple(name for name in names if isinstance(name, str))
+            return _string_names(names)
         case _:
             return ()
 
 
-def _validate_scalars(values: dict[str, ReducedScalar]) -> None:
-    """Reject malformed custom results before combining them with successful reducers."""
+def _string_names(names: Iterable[object]) -> tuple[str, ...]:
+    """Keep valid metric identities from potentially malformed custom reducer output."""
+    valid: list[str] = []
+    for name in names:
+        match name:
+            case str():
+                valid.append(name)
+    return tuple(valid)
+
+
+def _validate_scalars(values: dict[str, ReducedScalar]) -> dict[str, ReducedScalar]:
+    """Normalize host scalars and reject unsupported tensors before batched transfers."""
+    validated: dict[str, ReducedScalar] = {}
     for name, value in values.items():
-        match value:
-            case torch.Tensor():
-                if value.numel() != 1:
-                    raise ValueError(f"reducer metric {name!r} must be scalar")
-            case float() | int() | Absent():
-                continue
+        match name:
+            case str():
+                validated[name] = _validate_scalar(name, value)
             case _:
-                raise TypeError(f"unsupported scalar type for metric {name!r}")
+                raise TypeError("reducer metric names must be strings")
+    return validated
+
+
+def _validate_scalar(name: str, value: ReducedScalar) -> ReducedScalar:
+    """Keep conversion failures inside the owning reducer's error boundary."""
+    match value:
+        case torch.Tensor():
+            if value.numel() != 1:
+                raise ValueError(f"reducer metric {name!r} must be scalar")
+            if (
+                value.is_complex()
+                or value.layout != torch.strided
+                or value.is_quantized
+                or value.device.type == "meta"
+            ):
+                raise TypeError(f"reducer metric {name!r} must be a materializable real tensor")
+            return value.detach()
+        case float() | int():
+            return float(value)
+        case Absent():
+            return value
+        case _:
+            raise TypeError(f"unsupported scalar type for metric {name!r}")
 
 
 @dataclass(frozen=True)

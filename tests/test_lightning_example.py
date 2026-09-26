@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import polars as pl
 import torch
@@ -11,6 +11,9 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 from torch.utils.data import DataLoader, TensorDataset
 
 from examples.lightning_mnist import MnistRunConfig, run_training
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_lightning_example_writes_json_and_tensorboard(tmp_path: Path) -> None:
@@ -56,7 +59,7 @@ def test_lightning_example_writes_json_and_tensorboard(tmp_path: Path) -> None:
     assert [event.step for event in events.Histograms(gradient_distribution)] == [0, 1, 2]
 
 
-def _mnist_shaped_loader(*, samples: int) -> DataLoader:
+def _mnist_shaped_loader(*, samples: int) -> DataLoader[tuple[torch.Tensor, ...]]:
     """Provide labeled image batches without downloading data during tests."""
     images = torch.randn(samples, 1, 28, 28)
     targets = torch.arange(samples) % 10

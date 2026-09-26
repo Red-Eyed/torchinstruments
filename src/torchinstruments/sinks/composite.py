@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
-from torchinstruments.records import ModuleRecord, RunRecord, SampleRecord
-from torchinstruments.sinks.base import Sink
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from torchinstruments.records import ModuleRecord, RunRecord, SampleRecord
+    from torchinstruments.sinks.base import Sink
 
 
 class CompositeSink:

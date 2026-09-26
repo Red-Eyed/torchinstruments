@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from torch import nn
+from typing import TYPE_CHECKING
 
-from torchinstruments.selectors.base import ModuleSelector
+if TYPE_CHECKING:
+    from torch import nn
+
+    from torchinstruments.selectors.base import ModuleSelector
 
 
 def leaf_modules() -> ModuleSelector:

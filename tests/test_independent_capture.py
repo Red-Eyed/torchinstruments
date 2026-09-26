@@ -5,8 +5,7 @@ from __future__ import annotations
 import copy
 from datetime import timedelta
 from enum import StrEnum
-from pathlib import Path
-from typing import assert_never
+from typing import TYPE_CHECKING, assert_never
 
 import lightning as L
 import polars as pl
@@ -14,8 +13,12 @@ import pytest
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
+from typing_extensions import override
 
 from torchinstruments import AlwaysSampler, EveryNForwardsSampler, inject_observer, remove_observer
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class Invocation(StrEnum):
@@ -35,30 +38,52 @@ class ChildCallingModel(L.LightningModule):
         self.network = nn.Sequential(nn.Linear(2, 2), nn.Sigmoid())
         self.invocation = invocation
 
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+    @override
+    # Lightning types forward as Any varargs; remove when it supports typed model inputs.
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:  # pyrefly: ignore[bad-override]
         """Run the computational network."""
-        return self.network(inputs)
+        output: object = self.network(inputs)
+        match output:
+            case torch.Tensor():
+                return output
+            case _:
+                pytest.fail("network must return a tensor")
 
-    def _compute(self, batch: tuple[torch.Tensor]) -> torch.Tensor:
+    def _compute(self, batch: object) -> torch.Tensor:
         """Invoke the network through the configured step entry point."""
+        match batch:
+            case [torch.Tensor() as inputs]:
+                pass
+            case _:
+                raise TypeError("test batch must contain one input tensor")
         match self.invocation:
             case Invocation.ROOT:
-                return self(batch[0])
+                output: object = self(inputs)
             case Invocation.FORWARD:
-                return self.forward(batch[0])
+                output = self.forward(inputs)
             case Invocation.CHILD:
-                return self.network(batch[0])
+                output = self.network(inputs)
             case _:
                 assert_never(self.invocation)
+        match output:
+            case torch.Tensor():
+                return output
+            case _:
+                pytest.fail("configured invocation must return a tensor")
 
-    def training_step(self, batch: tuple[torch.Tensor], batch_idx: int) -> torch.Tensor:
+    @override
+    # Lightning dispatches a batch and index; remove when its hook signature expresses them.
+    def training_step(self, batch: object, batch_idx: int) -> torch.Tensor:  # pyrefly: ignore[bad-override]
         """Produce a differentiable loss without changing model invocation semantics."""
         return self._compute(batch).square().mean()
 
-    def validation_step(self, batch: tuple[torch.Tensor], batch_idx: int) -> None:
+    @override
+    # Lightning dispatches a batch and index; remove when its hook signature expresses them.
+    def validation_step(self, batch: object, batch_idx: int) -> None:  # pyrefly: ignore[bad-override]
         """Exercise standalone inference without a backward pass."""
         self._compute(batch)
 
+    @override
     def configure_optimizers(self) -> torch.optim.Optimizer:
         """Use a zero learning rate so captured outputs stay comparable."""
         return torch.optim.SGD(self.parameters(), lr=0.0)

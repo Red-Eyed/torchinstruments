@@ -2,16 +2,30 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import get_type_hints
 
 import polars as pl
 import pytest
 import torch
 from torch import nn
+from typing_extensions import override
 
 from torchinstruments import AlwaysSampler, inject_observer, remove_observer
-from torchinstruments.records import ModuleRecord, RunRecord, SampleRecord
+from torchinstruments.capture import CaptureCallbacks
+from torchinstruments.history.records import Observation
+from torchinstruments.measurement import TensorMeasurement
+from torchinstruments.records import ErrorRecord, ModuleRecord, RunRecord, SampleRecord
 from torchinstruments.reducers import ReducedScalar
 from torchinstruments.sampling import SamplingEvent
+
+
+@pytest.mark.parametrize(
+    "record",
+    [RunRecord, SampleRecord, ErrorRecord, Observation, TensorMeasurement, CaptureCallbacks],
+)
+def test_record_annotations_remain_runtime_resolvable(record: type[object]) -> None:
+    """Preserve runtime schema inspection when lint fixes relocate annotation imports."""
+    assert get_type_hints(record)
 
 
 @dataclass
@@ -41,6 +55,7 @@ def events() -> RecordedEvents:
 class Nested(nn.Module):
     """Return a used and an unused branch in a nested output structure."""
 
+    @override
     def forward(self, inputs: torch.Tensor) -> dict[str, list[torch.Tensor]]:
         """Create distinct differentiable outputs with stable tensor paths."""
         return {"branches": [inputs * 2, inputs * 3]}

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from torch import nn
 
 from torchinstruments import DirectorySink
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

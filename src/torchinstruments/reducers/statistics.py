@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import torch
 
 from torchinstruments.records import Absent, JsonSetting
 from torchinstruments.reducers.base import ReducedScalar, Reducer, ReductionResult
 from torchinstruments.reducers.quantiles import exact_quartiles
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 _MetricName = Literal[
     "mean",
@@ -144,7 +146,7 @@ def combine(*reducers: Reducer) -> Reducer:
     Built-in statistics are fused so common tensor preparation and masking happen once.
     """
     if all(isinstance(reducer, _StatisticReducer) for reducer in reducers):
-        statistic_reducers = cast(tuple[_StatisticReducer, ...], reducers)
+        statistic_reducers = cast("tuple[_StatisticReducer, ...]", reducers)
         metrics = tuple(metric for reducer in statistic_reducers for metric in reducer.metrics)
         if len(metrics) != len(set(metrics)):
             raise ValueError("combined reducers contain duplicate metrics")

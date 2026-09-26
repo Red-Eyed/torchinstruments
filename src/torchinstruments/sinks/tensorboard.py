@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from torchinstruments.records import (
     HistogramRecord,
@@ -15,6 +14,9 @@ from torchinstruments.records import (
     TensorRecord,
 )
 from torchinstruments.sinks.paths import path_segment, tensor_path_prefix
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 class HistogramWriter(Protocol):

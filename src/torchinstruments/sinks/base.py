@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
-from torchinstruments.records import ModuleRecord, RunRecord, SampleRecord
+if TYPE_CHECKING:
+    from torchinstruments.records import ModuleRecord, RunRecord, SampleRecord
 
 
 class Sink(Protocol):

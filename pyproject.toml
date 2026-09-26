@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "torchinstruments"
-version = "0.10.1"
+version = "0.10.2"
 description = "Passive, trainer-agnostic telemetry for PyTorch models"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -42,13 +42,15 @@ dev = [
     "lightning>=2.6.5",
     "matplotlib>=3.9",
     "pydantic-settings>=2.10",
-    "pyrefly>=0.34.0",
+    "pyrefly>=1.3.1",
     "pytest>=8.3.0",
-    "ruff>=0.12.0",
+    "ruff>=0.16.9",
     "tensorboard>=2.21.0",
     "torchvision>=0.28.0",
     "tqdm>=4.67",
     "transformers>=4.50,<5",
+    "types-tqdm>=4.67",
+    "typing-extensions>=4.12",
 ]
 
 [tool.pytest.ini_options]
@@ -56,15 +58,52 @@ addopts = "-ra"
 testpaths = ["tests"]
 
 [tool.pyrefly]
+required-version = ">=1.3.1"
+python-version = "3.11"
+preset = "strict"
 project-includes = ["examples/**/*.py", "src/**/*.py", "tests/**/*.py"]
 search-path = [".", "src"]
+ignore-missing-imports = []
+replace-imports-with-any = []
+replace-untyped-imports-with-any = []
+check-unannotated-defs = true
+strict-callable-subtyping = true
+strict-partial-subtyping = true
+permissive-ignores = false
+type-ignore-unknown-tag-behavior = "no-effect"
+
+[tool.pyrefly.errors]
+explicit-any = "error"
+implicit-any = "error"
+no-any-return = "error"
+unannotated-return = "error"
+unannotated-parameter = "error"
+unannotated-protocol-member = "error"
+unused-ignore = "error"
+redundant-cast = "error"
+redundant-condition = "error"
+incompatible-comparison = "error"
+string-as-iterable = "error"
+empty-body = "error"
 
 [tool.ruff]
+required-version = ">=0.16.9"
 line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["B", "D", "E", "F", "I", "RUF", "UP"]
+select = ["ANN", "B", "D", "E", "F", "I", "PGH003", "PGH004", "RUF", "TC", "UP"]
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = false
+ignore-fully-untyped = false
+suppress-none-returning = false
+suppress-dummy-args = false
+
+[tool.ruff.lint.flake8-type-checking]
+# Record annotations remain resolvable for runtime schema inspection.
+runtime-evaluated-decorators = ["dataclasses.dataclass"]
+runtime-evaluated-base-classes = ["typing.TypedDict"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

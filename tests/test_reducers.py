@@ -155,4 +155,4 @@ def test_histogram_rejects_invalid_configuration(
 ) -> None:
     """Reject configurations whose serialized meaning would be ambiguous."""
     with pytest.raises(ValueError, match=message):
-        histogram(**kwargs)  # type: ignore[arg-type]
+        histogram(**kwargs)  # pyrefly: ignore[bad-argument-type]

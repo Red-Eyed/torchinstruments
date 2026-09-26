@@ -4,6 +4,25 @@ All notable changes to TorchInstruments are documented here.
 
 ## [Unreleased]
 
+### Bug Fixes
+
+- Keep successful scalar and histogram measurements when custom scalar reducers return
+  complex, sparse, quantized, meta-device, or unrepresentable integer values under
+  `warn`/`ignore`. Preserve known failed metric names with an absence reason.
+- Refresh `result.json` and `index.md` after dashboard delivery fails. Preserve independent
+  publication errors and apply the configured observer error policy after attempting each artifact.
+- Close owned TensorBoard resources when directory initialization or final cleanup fails.
+- Accept integer observations wherever the history contract accepts floats, including zero.
+
+### Developers
+
+- Require Pyrefly 1.3.1 and Ruff 0.16.9 or newer, enable strict typing and annotation/import
+  checks, and preserve runtime record annotation inspection.
+- Validate untyped model outputs and Lightning batches at their boundaries using `match`.
+- Add regression coverage for invalid custom scalars, artifact delivery failures, partial
+  initialization, integer observations, and runtime annotation resolution.
+- Advance the package version to `0.10.2`.
+
 ## [0.10.0] - 2026-09-24
 
 ### Backwards Incompatible Changes

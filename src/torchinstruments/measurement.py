@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-
-import torch
+from typing import TYPE_CHECKING
 
 from torchinstruments.records import TensorRecord
 from torchinstruments.reducers import HistogramReducer, Reducer, reduce_histograms, reduce_tensor
+
+if TYPE_CHECKING:
+    import torch
 
 
 @dataclass(frozen=True)

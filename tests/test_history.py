@@ -3,19 +3,25 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
 import torch
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 from torch import nn
+from typing_extensions import override
 
 from torchinstruments import AlwaysSampler, HistoryConfig, inject_observer, remove_observer
 from torchinstruments.history.parquet import ParquetHistory
 from torchinstruments.history.records import Observation, Signal
 from torchinstruments.history.summary import aggregate_history
 from torchinstruments.records import Absent, ExecutionContext, ModuleMode
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from torchinstruments.reducers import HistogramReductionResult
 
 
 def summary_metrics(path: Path) -> pl.DataFrame:
@@ -27,6 +33,38 @@ def summary_metrics(path: Path) -> pl.DataFrame:
         .select("signal", pl.col("statistics").struct.field("mean").alias("summary"))
         .unnest("summary")
     )
+
+
+@pytest.mark.parametrize("value", [0, 0.0, Absent("not measured")])
+def test_history_numeric_contract(tmp_path: Path, value: float | Absent) -> None:
+    """Accept integer and float zeros without confusing either with unavailable data."""
+    history = ParquetHistory(tmp_path / "history.parquet", buffer_rows=7)
+    history.initialize()
+    history.append(
+        Observation(
+            "layer",
+            0,
+            Signal.OUTPUT,
+            "output",
+            0,
+            0,
+            datetime.now(UTC),
+            (1,),
+            "float32",
+            "mean",
+            value,
+            ExecutionContext(ModuleMode.TRAIN, True),
+        )
+    )
+    history.close()
+    row = pl.read_parquet(history.path)
+    match value:
+        case Absent(reason=reason):
+            assert row["value"].item() is None
+            assert row["unavailable_reason"].item() == reason
+        case _:
+            assert row["value"].item() == 0.0
+            assert row["unavailable_reason"].item() == ""
 
 
 def test_artifacts_refresh_before_removal(telemetry_dir: Path) -> None:
@@ -215,9 +253,15 @@ class Shared(nn.Module):
         self.first = nn.Linear(2, 2)
         self.second = self.first
 
+    @override
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """Use both aliases in one forward."""
-        return self.second(self.first(inputs))
+        output: object = self.second(self.first(inputs))
+        match output:
+            case torch.Tensor():
+                return output
+            case _:
+                pytest.fail("shared model must return a tensor")
 
 
 def test_shared_calls_and_delayed_backwards(telemetry_dir: Path) -> None:
@@ -261,7 +305,7 @@ def test_thousands_of_layers_keep_history_and_limit_histogram_work(telemetry_dir
 
     configured = histogram(every_n_samples=1)
 
-    def counted(tensor: torch.Tensor, *, sample_id: int):
+    def counted(tensor: torch.Tensor, *, sample_id: int) -> HistogramReductionResult:
         """Count reductions to distinguish collection selection from tag filtering."""
         nonlocal calls
         calls += 1

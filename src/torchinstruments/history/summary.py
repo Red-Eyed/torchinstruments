@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import polars as pl
 
-from torchinstruments.records import ModuleRecord
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from torchinstruments.records import ModuleRecord
 
 
 @dataclass(frozen=True)

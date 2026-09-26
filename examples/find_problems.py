@@ -15,6 +15,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, CliApp, CliImplicitFlag
 from torch import nn
 from tqdm import tqdm
+from typing_extensions import override
 
 from torchinstruments import AlwaysSampler, HistoryConfig, inject_observer, remove_observer
 
@@ -90,6 +91,7 @@ class Gain(nn.Module):
         super().__init__()
         self.factor = 1.0
 
+    @override
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """Apply the gain without hiding it inside another module."""
         return inputs * self.factor
@@ -103,6 +105,7 @@ class Bridge(nn.Module):
         super().__init__()
         self.disconnected = False
 
+    @override
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """Detach only when the experiment explicitly introduces the fault."""
         return inputs.detach() if self.disconnected else inputs
@@ -116,6 +119,7 @@ class LogProbe(nn.Module):
         super().__init__()
         self.invalid = False
 
+    @override
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """Switch between intended and deliberately invalid logarithms."""
         return torch.log(-inputs.abs()) if self.invalid else torch.log1p(inputs.abs())
@@ -141,13 +145,19 @@ class DiagnosticModel(nn.Module):
             self.head.weight.fill_(0.5)
             self.head.bias.zero_()
 
+    @override
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """Apply the named blocks without hiding the diagnostic boundaries."""
         hidden = self.activation(self.pre(inputs))
         hidden = self.bridge(self.gain(hidden))
         if self.use_log:
             hidden = self.probe(hidden)
-        return self.head(hidden)
+        output: object = self.head(hidden)
+        match output:
+            case torch.Tensor():
+                return output
+            case _:
+                raise TypeError("diagnostic head must return a tensor")
 
 
 def introduce_fault(model: DiagnosticModel, problem: Problem, step: int) -> None:

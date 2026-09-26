@@ -8,6 +8,7 @@ import pytest
 import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
+from typing_extensions import override
 
 from torchinstruments import AlwaysSampler, inject_observer, remove_observer
 
@@ -23,12 +24,19 @@ class Checkpointed(nn.Module):
         self.reentrant = reentrant
         self.checkpointed = True
 
+    @override
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """Checkpoint a shared block twice before projecting to a loss input."""
         if not self.checkpointed:
-            return self.head(self.features(self.features(inputs)))
-        first = checkpoint(self.features, inputs, use_reentrant=self.reentrant)
-        return self.head(checkpoint(self.features, first, use_reentrant=self.reentrant))
+            output: object = self.head(self.features(self.features(inputs)))
+        else:
+            first = checkpoint(self.features, inputs, use_reentrant=self.reentrant)
+            output = self.head(checkpoint(self.features, first, use_reentrant=self.reentrant))
+        match output:
+            case torch.Tensor():
+                return output
+            case _:
+                pytest.fail("checkpointed model must return a tensor")
 
 
 @pytest.mark.parametrize("reentrant", [False, True])

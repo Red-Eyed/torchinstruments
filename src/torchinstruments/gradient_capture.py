@@ -2,9 +2,12 @@
 
 from collections.abc import Callable
 from threading import Lock
+from typing import TYPE_CHECKING
 
 import torch
-from torch.utils.hooks import RemovableHandle
+
+if TYPE_CHECKING:
+    from torch.utils.hooks import RemovableHandle
 
 
 def backward_is_running() -> bool:
@@ -50,7 +53,8 @@ class FirstBackward:
         """Disable queued completion and detach every still-live tensor hook."""
         with self._lock:
             self._closed = True
-            handles, self._handles = self._handles, []
+            handles = self._handles
+            self._handles = []
         for handle in handles:
             handle.remove()
 

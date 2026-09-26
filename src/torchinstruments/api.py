@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from datetime import timedelta
 from enum import Enum
-from pathlib import Path
-
-from torch import nn
+from typing import TYPE_CHECKING
 
 from torchinstruments.capture import ForwardCallCapture
 from torchinstruments.distributed import RankPolicy, detect_rank, parse_rank_policy, rank_is_enabled
@@ -17,8 +14,15 @@ from torchinstruments.measurement import Measurements, TensorMeasurement
 from torchinstruments.observer import Observer
 from torchinstruments.reducers import HistogramReducer, Reducer, default_reducers, histogram
 from torchinstruments.sampling import SamplingPolicy, TimedSampler
-from torchinstruments.selectors import ModuleSelector
 from torchinstruments.sinks import CompositeSink, DirectorySink, Sink
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from pathlib import Path
+
+    from torch import nn
+
+    from torchinstruments.selectors import ModuleSelector
 
 _DEFAULT_HISTORY = HistoryConfig()
 

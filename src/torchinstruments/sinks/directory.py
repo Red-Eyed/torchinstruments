@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 from torch.utils.tensorboard import SummaryWriter
@@ -13,6 +15,7 @@ from torchinstruments.history.parquet import ParquetHistory
 from torchinstruments.history.records import observations
 from torchinstruments.history.summary import HistoryConfig, write_result
 from torchinstruments.records import (
+    Absent,
     ErrorRecord,
     ModuleCallRecord,
     ModuleRecord,
@@ -63,16 +66,15 @@ class DirectorySink:
         self._run = run
         self._modules = modules
         self._history.initialize()
-        self._writer = SummaryWriter(log_dir=str(self._output_dir / "tensorboard"))
-        self._dashboard = TensorBoardSink(self._writer)
-        self._dashboard.initialize(run, modules)
-        self._initialized = True
-        try:
+        with ExitStack() as cleanup:
+            self._writer = SummaryWriter(log_dir=str(self._output_dir / "tensorboard"))
+            cleanup.callback(self._writer.close)
+            self._dashboard = TensorBoardSink(self._writer)
+            cleanup.callback(self._dashboard.close)
+            self._dashboard.initialize(run, modules)
             self._publish()
-        except BaseException:
-            self._writer.close()
-            self._initialized = False
-            raise
+            self._initialized = True
+            cleanup.pop_all()
 
     def observe(self, sample: SampleRecord) -> None:
         """Persist only new measurements and refresh live collection metadata."""
@@ -88,9 +90,37 @@ class DirectorySink:
         for error in sample.errors:
             self._remember_error(error)
         self._remember_unavailable_histograms(sample)
+        self._publish_sample(sample)
+
+    def _publish_sample(self, sample: SampleRecord) -> None:
+        """Refresh independent artifacts before propagating delivery failures."""
+        failures: list[Exception] = []
+        publications = (
+            ("tensorboard", partial(self._publish_dashboard, sample)),
+            ("result.json", self._publish_result),
+            ("index.md", self._publish_index),
+        )
+        for probe, publish in publications:
+            try:
+                publish()
+            except Exception as error:
+                failures.append(error)
+                self._remember_error(
+                    ErrorRecord(
+                        sample.timestamp,
+                        Absent("artifact publication is run-level"),
+                        probe,
+                        type(error).__qualname__,
+                        str(error),
+                    )
+                )
+        if failures:
+            raise ExceptionGroup("directory artifact publication failed", failures)
+
+    def _publish_dashboard(self, sample: SampleRecord) -> None:
+        """Deliver the current histogram event and flush the owned writer."""
         self._dashboard.observe(sample)
         self._writer.flush()
-        self._publish()
 
     def _remember_error(self, error: ErrorRecord) -> None:
         """Bound retained failure detail independently of run length."""
@@ -132,15 +162,20 @@ class DirectorySink:
             self._history.close()
             self._publish()
         finally:
-            self._dashboard.close()
-            self._writer.close()
             self._initialized = False
+            with ExitStack() as cleanup:
+                cleanup.callback(self._writer.close)
+                cleanup.callback(self._dashboard.close)
 
     def _publish(self) -> None:
         """Atomically refresh a descriptive result and its reading guide."""
+        self._publish_result()
+        self._publish_index()
+
+    def _publish_result(self) -> None:
+        """Refresh the live scalar summary independently of dashboard delivery."""
         source = self._output_dir / "history.parquet"
         write_result(source, self._output_dir / "result.json", self._modules, self._config.window)
-        self._publish_index()
 
     def _publish_index(self) -> None:
         """Refresh live counts and errors without rescanning historical measurements."""

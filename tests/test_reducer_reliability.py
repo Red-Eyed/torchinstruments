@@ -9,8 +9,69 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 from torch import nn
 
 from torchinstruments import AlwaysSampler, inject_observer, remove_observer
-from torchinstruments.reducers import HistogramReductionResult, default_reducers, reduce_tensor
+from torchinstruments.reducers import (
+    HistogramReductionResult,
+    ReducedScalar,
+    default_reducers,
+    mean,
+    reduce_tensor,
+)
 from torchinstruments.reducers.quantiles import exact_quartiles
+
+
+@pytest.fixture
+def invalid_scalar(kind: str) -> ReducedScalar:
+    """Create unsupported scalar results without sharing tensor state across tests."""
+    match kind:
+        case "complex":
+            return torch.tensor(1 + 2j)
+        case "large_integer":
+            return 10**400
+        case "meta":
+            return torch.empty((), device="meta")
+        case "sparse":
+            return torch.ones(1).to_sparse()
+        case "quantized":
+            return torch.quantize_per_tensor(torch.ones(1), 0.1, 0, torch.qint8)
+        case _:
+            raise ValueError(f"unknown invalid scalar case: {kind}")
+
+
+@pytest.mark.parametrize("kind", ["complex", "large_integer", "meta", "sparse", "quantized"])
+def test_invalid_scalar_preserves_sibling_measurements(
+    telemetry_dir: Path, invalid_scalar: ReducedScalar
+) -> None:
+    """Retain forward and backward evidence when a custom scalar cannot be materialized."""
+
+    def custom(tensor: torch.Tensor) -> dict[str, ReducedScalar]:
+        """Return a type-compatible value outside the supported scalar domain."""
+        return {"custom": invalid_scalar}
+
+    model = nn.Identity()
+    inject_observer(
+        model,
+        output_dir=telemetry_dir,
+        sampler=AlwaysSampler(),
+        reducers=(mean(), custom),
+        error_policy="ignore",
+    )
+    try:
+        model(torch.tensor([1.0, 3.0], requires_grad=True)).sum().backward()
+        history = pl.read_parquet(telemetry_dir / "history.parquet")
+        means = history.filter(pl.col("metric") == "mean")
+        assert means["value"].to_list() == [2.0, 1.0]
+        missing = history.filter(pl.col("metric") == "custom")
+        assert missing["value"].null_count() == 2
+        assert all(missing["unavailable_reason"])
+        events = EventAccumulator(str(telemetry_dir / "tensorboard")).Reload()
+        tags = events.Tags()["histograms"]
+        match tags:
+            case list():
+                assert len(tags) == 2
+            case _:
+                pytest.fail("histogram tags must be a list")
+    finally:
+        remove_observer(model)
 
 
 def test_default_statistics_above_quantile_limit() -> None:
